@@ -1,4 +1,4 @@
-# NPMcountdy: kleines Python-Programm ohne Zusatzpakete, nur tzdata für die Zeitzone
+# NPMcountdy: small Python program without extra packages, only tzdata for the time zone
 FROM python:3.13-alpine
 RUN apk add --no-cache tzdata \
  && adduser -D -u 1000 npmcountdy

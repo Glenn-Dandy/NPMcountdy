@@ -1,26 +1,26 @@
 #!/usr/bin/env python3
-"""Erzeugt app/static/world.json: Länderumrisse als fertige SVG-Pfade, Schlüssel ist der ISO-Ländercode.
+"""Builds app/static/world.json: country outlines as ready-made SVG paths, keyed by ISO country code.
 
-Quellen (einmalig herunterladen, nicht Teil des Repos):
-  https://cdn.jsdelivr.net/npm/world-atlas@2.0.2/countries-50m.json   (Natural Earth, gemeinfrei)
-  https://cdn.jsdelivr.net/npm/i18n-iso-countries@7.11.0/codes.json   (ISO-Zahlencode zu Ländercode)
+Sources (download once, not part of the repo):
+  https://cdn.jsdelivr.net/npm/world-atlas@2.0.2/countries-50m.json   (Natural Earth, public domain)
+  https://cdn.jsdelivr.net/npm/i18n-iso-countries@7.11.0/codes.json   (ISO numeric code to country code)
 
-Aufruf: python3 tools/make_world.py countries-50m.json codes.json app/static/world.json
+Usage: python3 tools/make_world.py countries-50m.json codes.json app/static/world.json
 """
 
 import json
 import math
 import sys
 
-WIDTH = 1000          # Breite der Karte in SVG-Einheiten
-TOLERANCE = 0.35      # Vereinfachung in SVG-Einheiten
-MIN_AREA = 0.6        # kleinere Inseln fallen weg, das größte Teil eines Landes bleibt immer
-NAMED = {"Kosovo": "XK", "N. Cyprus": "CY", "Somaliland": "SO"}  # in world-atlas ohne Zahlencode
-SKIP = {"AQ"}         # Antarktis
+WIDTH = 1000          # map width in SVG units
+TOLERANCE = 0.35      # simplification in SVG units
+MIN_AREA = 0.6        # smaller islands are dropped, the largest part of a country always stays
+NAMED = {"Kosovo": "XK", "N. Cyprus": "CY", "Somaliland": "SO"}  # no numeric code in world-atlas
+SKIP = {"AQ"}         # Antarctica
 
 
 def natural_earth(lon, lat):
-    """Natural-Earth-I-Projektion, Ergebnis ungefähr in [-2.74, 2.74] x [-1.42, 1.42]."""
+    """Natural Earth I projection, result roughly in [-2.74, 2.74] x [-1.42, 1.42]."""
     l, p = math.radians(lon), math.radians(lat)
     p2 = p * p
     p4 = p2 * p2
@@ -52,7 +52,7 @@ def ring(arcs, idx):
 
 
 def clip(pts, keep, cut):
-    """Sutherland-Hodgman an einem Längengrad: keep(lon) sagt, welche Seite bleibt, cut ist der Längengrad."""
+    """Sutherland-Hodgman at a meridian: keep(lon) tells which side stays, cut is the longitude."""
     out = []
     for (x0, y0), (x1, y1) in zip(pts, pts[1:] + pts[:1]):
         if keep(x0) != keep(x1):
@@ -63,7 +63,7 @@ def clip(pts, keep, cut):
 
 
 def split_antimeridian(pts):
-    """Ringe über die Datumsgrenze (Russland, Fidschi) erst durchgehend machen, dann an ±180° teilen."""
+    """Rings across the antimeridian (Russia, Fiji): make them continuous first, then split at ±180°."""
     if all(abs(b[0] - a[0]) <= 180 for a, b in zip(pts, pts[1:])):
         return [pts]
     flat, shift = [pts[0]], 0
@@ -83,7 +83,7 @@ def split_antimeridian(pts):
 
 
 def simplify(pts, tol):
-    """Douglas-Peucker ohne Rekursion."""
+    """Douglas-Peucker without recursion."""
     if len(pts) < 4:
         return pts
     keep = [False] * len(pts)
@@ -137,7 +137,7 @@ def main(topo_path, codes_path, out_path):
                     pts = [natural_earth(lon, lat) for lon, lat in part]
                     pts = [(WIDTH / 2 + x * scale, -y * scale) for x, y in pts]
                     small = simplify(pts, TOLERANCE)
-                    shapes.setdefault(cc, []).append(small if len(small) >= 4 else pts)  # Kleinstaaten nicht wegkürzen
+                    shapes.setdefault(cc, []).append(small if len(small) >= 4 else pts)  # do not simplify microstates away
 
     ys = [y for rings in shapes.values() for r in rings for _, y in r]
     top = min(ys)
@@ -149,7 +149,7 @@ def main(topo_path, codes_path, out_path):
     height = math.ceil(max(ys) - top)
     json.dump({"width": WIDTH, "height": height, "source": "Natural Earth via world-atlas", "shapes": world},
               open(out_path, "w"), separators=(",", ":"), sort_keys=True)
-    print(f"{len(world)} Länder, {WIDTH}x{height}")
+    print(f"{len(world)} countries, {WIDTH}x{height}")
 
 
 if __name__ == "__main__":

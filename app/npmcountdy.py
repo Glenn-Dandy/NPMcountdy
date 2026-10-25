@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""NPMcountdy: liest die Access-Logs des Nginx Proxy Manager mit und zeigt,
-wie viele Daten an welche Domain, welchen Bereich und welche Besucher gingen.
+"""NPMcountdy: follows the access logs of Nginx Proxy Manager and shows
+how much data went to which domain, area and visitor.
 
-Nur Standardbibliothek, damit das Image ohne pip auskommt.
+Standard library only, so the image needs no pip.
 """
 
 import gzip
@@ -21,7 +21,7 @@ from ipaddress import ip_address, ip_network
 from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo
 
-VERSION = "0.0.1"
+VERSION = "0.0.2"
 LOG_DIR = os.environ.get("LOG_DIR", "/logs")
 DB_PATH = os.environ.get("DB_PATH", "/data/npmcountdy.db")
 PORT = int(os.environ.get("PORT", "7881"))
@@ -29,15 +29,16 @@ INTERVAL = int(os.environ.get("INTERVAL", "60"))
 DETAIL_DAYS = int(os.environ.get("DETAIL_DAYS", "90"))
 TZ = ZoneInfo(os.environ.get("TZ", "Europe/Berlin"))
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
-PAGES = {"", "verteilung", "laender", "besucher", "dateien"}  # Unterseiten, alle liefern index.html
+PAGES = {"", "traffic", "countries", "visitors", "files",  # sub pages, all serve index.html
+         "verteilung", "laender", "besucher", "dateien"}   # German addresses
 GEOIP = os.environ.get("GEOIP", "on").lower() not in ("off", "0", "false", "no")
 GEOIP_PATH = os.environ.get("GEOIP_PATH", os.path.join(os.path.dirname(DB_PATH), "dbip-country-lite.mmdb"))
-CLEAR = os.environ.get("CLEAR", "on").lower() not in ("off", "0", "false", "no")  # Domain-Daten in der Oberfläche löschbar
-GEOIP_URL = os.environ.get("GEOIP_URL", "")  # leer: DB-IP Country Lite des aktuellen Monats
-# dieselben DB-IP-Daten über das npm-CDN, falls download.db-ip.com nicht erreichbar ist
+CLEAR = os.environ.get("CLEAR", "on").lower() not in ("off", "0", "false", "no")  # allow deleting a domain's data in the UI
+GEOIP_URL = os.environ.get("GEOIP_URL", "")  # empty: DB-IP Country Lite of the current month
+# the same DB-IP data via the npm CDN, in case download.db-ip.com cannot be reached
 GEOIP_MIRROR = "https://cdn.jsdelivr.net/npm/@ip-location-db/dbip-country-mmdb/dbip-country.mmdb"
 
-# https://www.cloudflare.com/ips/ : steht so eine Adresse im Log, ist die echte Besucher-IP unbekannt
+# https://www.cloudflare.com/ips/ : if one of these is in the log, the real visitor IP is unknown
 CLOUDFLARE = [ip_network(n) for n in (
     "173.245.48.0/20", "103.21.244.0/22", "103.22.200.0/22", "103.31.4.0/22", "141.101.64.0/18",
     "108.162.192.0/18", "190.93.240.0/20", "188.114.96.0/20", "197.234.240.0/22", "198.41.128.0/17",
@@ -45,7 +46,7 @@ CLOUDFLARE = [ip_network(n) for n in (
     "2400:cb00::/32", "2606:4700::/32", "2803:f800::/32", "2405:b500::/32", "2405:8100::/32",
     "2a06:98c0::/29", "2c0f:f248::/32")]
 
-# [25/Oct/2026:01:53:31 +0000] - 200 200 - GET https host "/pfad" [Client 1.2.3.4] [Length 123] [Gzip -] [Sent-to x] "UA" "Referer"
+# [25/Oct/2026:01:53:31 +0000] - 200 200 - GET https host "/path" [Client 1.2.3.4] [Length 123] [Gzip -] [Sent-to x] "UA" "Referer"
 LINE_RE = re.compile(
     r'^\[(?P<time>[^\]]+)\] (?P<codes>.*?) - (?P<method>[A-Z]+) (?P<scheme>\S+) (?P<host>\S+) '
     r'"(?P<uri>.*)" \[Client (?P<client>[^\]]+)\] \[Length (?P<length>\d+)\]'
@@ -60,7 +61,7 @@ KIND_RULES = [
 ]
 
 state_lock = threading.Lock()
-db_lock = threading.Lock()  # Einlesen und Löschen nie gleichzeitig, sonst kommen gelöschte Zeilen zurück
+db_lock = threading.Lock()  # never ingest and delete at the same time, or deleted rows come back
 status = {"last_ingest": None, "last_lines": 0, "last_error": None}
 
 
@@ -99,23 +100,23 @@ def db_init():
     con.close()
 
 
-# ---------- Länder zu IP-Adressen (DB-IP Lite, CC BY 4.0) ----------
+# ---------- Countries for IP addresses (DB-IP Lite, CC BY 4.0) ----------
 
 class MMDB:
-    """Minimaler Leser für MaxMind-DB-Dateien, reicht für die Länderdatenbank von DB-IP."""
+    """Minimal reader for MaxMind DB files, enough for the DB-IP country database."""
 
     def __init__(self, buf):
         self.buf = buf
         marker = buf.rfind(b"\xab\xcd\xefMaxMind.com")
         if marker < 0:
-            raise ValueError("keine MMDB-Datei")
+            raise ValueError("not an MMDB file")
         self.data = 0
         meta = self.decode(marker + 14)[0]
         self.nodes, self.rsize = meta["node_count"], meta["record_size"]
         self.data = self.nodes * self.rsize // 4 + 16
         self.v6 = meta["ip_version"] == 6
         self.v4start = 0
-        if self.v6:  # IPv4 liegt im IPv6-Baum hinter 96 Null-Bits
+        if self.v6:  # IPv4 sits in the IPv6 tree behind 96 zero bits
             for _ in range(96):
                 if self.v4start >= self.nodes:
                     break
@@ -138,7 +139,7 @@ class MMDB:
         b = self.buf
         ctrl = b[off]; off += 1
         typ, size = ctrl >> 5, ctrl & 31
-        if typ == 1:  # Zeiger in den Datenbereich
+        if typ == 1:  # pointer into the data section
             ss, v = (ctrl >> 3) & 3, ctrl & 7
             n = ss + 1
             p = int.from_bytes(b[off:off + n], "big")
@@ -206,19 +207,19 @@ def geo_download():
             with urllib.request.urlopen(req, timeout=60) as r:
                 raw = r.read()
             buf = gzip.decompress(raw) if raw[:2] == b"\x1f\x8b" else raw
-            MMDB(buf)  # erst prüfen, dann die alte Datei ersetzen
+            MMDB(buf)  # validate first, then replace the old file
             with open(GEOIP_PATH + ".tmp", "wb") as f:
                 f.write(buf)
             os.replace(GEOIP_PATH + ".tmp", GEOIP_PATH)
             return
         except Exception as e:
-            why = getattr(e, "reason", None) or e  # URLError verpackt die eigentliche Ursache
+            why = getattr(e, "reason", None) or e  # URLError wraps the actual cause
             errors.append(f"{url}: {type(e).__name__}: {why}")
     raise RuntimeError(" | ".join(errors))
 
 
 def geo_refresh():
-    """Lädt die Länderdatenbank, wenn sie fehlt oder älter als 32 Tage ist (DB-IP erneuert sie monatlich)."""
+    """Downloads the country database if it is missing or older than 32 days (DB-IP renews it monthly)."""
     if not GEOIP:
         return
     try:
@@ -231,7 +232,7 @@ def geo_refresh():
             geo_download()
             geo["error"] = None
             mtime = os.path.getmtime(GEOIP_PATH)
-        except Exception as e:  # mit der alten Datei weitermachen, in 10 Minuten neu versuchen
+        except Exception as e:  # keep using the old file, retry in 10 minutes
             geo["error"] = str(e)
     if mtime is not None and mtime != geo["mtime"]:
         with open(GEOIP_PATH, "rb") as f:
@@ -243,7 +244,7 @@ def geo_refresh():
 
 
 def rebuild_countries():
-    """Ordnet Länder neu zu, die ohne Datenbank als ?? gespeichert wurden, soweit die IPs noch da sind."""
+    """Reassigns countries stored as ?? while there was no database, as far as the IPs are still kept."""
     con = db_connect()
     first = con.execute("SELECT MIN(day) FROM daily_clients").fetchone()[0]
     if first and con.execute("SELECT 1 FROM daily_countries WHERE country = '??' AND day >= ? LIMIT 1", (first,)).fetchone():
@@ -257,7 +258,7 @@ def rebuild_countries():
 
 
 def country_of(client):
-    """Ländercode, LAN, CLOUDFLARE (echte IP unbekannt) oder ?? (unbekannt)."""
+    """Country code, LAN, CLOUDFLARE (real IP unknown) or ?? (unknown)."""
     cc = country_cache.get(client)
     if cc:
         return cc
@@ -283,13 +284,13 @@ def country_of(client):
     return cc
 
 
-# ---------- Auswertung einer Logzeile ----------
+# ---------- Parsing a log line ----------
 
 def classify(ua):
     for name, rule in KIND_RULES:
         if rule.search(ua):
             return name
-    return "Sonstige"
+    return "Sonstige"  # "other"; kept in German because it is stored in existing databases, the UI translates it
 
 
 def net_of(client):
@@ -374,7 +375,7 @@ class Batch:
             [k + tuple(v) for k, v in self.countries.items()])
 
 
-# ---------- Logdateien lesen, auch über Rotationen hinweg ----------
+# ---------- Reading log files, across rotations ----------
 
 def open_any(path):
     return gzip.open(path, "rb") if path.endswith(".gz") else open(path, "rb")
@@ -389,7 +390,7 @@ def first_line(path):
 
 
 def read_from(path, offset, batch):
-    """Liest ab Byte offset bis zur letzten vollständigen Zeile, gibt das neue Offset zurück."""
+    """Reads from byte offset up to the last complete line, returns the new offset."""
     with open_any(path) as f:
         if offset:
             if path.endswith(".gz"):
@@ -406,7 +407,7 @@ def read_from(path, offset, batch):
 
 
 def rotated_of(base):
-    """Rotierte Dateien zu base, älteste zuerst: base.3.gz, base.2.gz, base.1 …"""
+    """Rotated files of base, oldest first: base.3.gz, base.2.gz, base.1 …"""
     def num(p):
         m = re.match(re.escape(base) + r"\.(\d+)(\.gz)?$", p)
         return int(m.group(1)) if m else None
@@ -434,7 +435,7 @@ def ingest():
         else:
             inode, offset, prev_head = prev
             if inode != st.st_ino or (prev_head and head != prev_head) or st.st_size < offset:
-                # Datei wurde rotiert: Rest der alten Datei in der rotierten Kopie nachlesen
+                # file was rotated: read the rest of the old file from the rotated copy
                 for old in rotated_of(base):
                     if prev_head and first_line(old) == prev_head:
                         read_from(old, offset, batch)
@@ -464,13 +465,13 @@ def ingest_loop():
                 n = ingest()
             with state_lock:
                 status.update(last_ingest=int(time.time()), last_lines=n, last_error=None)
-        except Exception as e:  # weiterlaufen, Fehler in der Oberfläche anzeigen
+        except Exception as e:  # keep running, show the error in the UI
             with state_lock:
                 status.update(last_error=f"{type(e).__name__}: {e}")
         time.sleep(INTERVAL)
 
 
-# ---------- Abfragen für die Oberfläche ----------
+# ---------- Queries for the UI ----------
 
 def summary(q):
     days = max(1, min(int(q.get("days", ["7"])[0]), 3650))
@@ -562,7 +563,7 @@ def summary(q):
 
 
 def clear_host(host):
-    """Löscht alle gespeicherten Zahlen einer Domain. Die Logdateien des NPM bleiben unverändert."""
+    """Deletes all stored figures of a domain. The NPM log files stay untouched."""
     with db_lock:
         con = db_connect()
         b, r = con.execute("SELECT COALESCE(SUM(bytes),0), COALESCE(SUM(requests),0) FROM hourly WHERE host = ?",
@@ -611,7 +612,7 @@ class Handler(BaseHTTPRequestHandler):
         name = "index.html" if u.path.strip("/") in PAGES else os.path.basename(u.path)
         path = os.path.join(STATIC_DIR, name)
         if not os.path.isfile(path):
-            return self.send(404, b"Nicht gefunden", "text/plain; charset=utf-8")
+            return self.send(404, b"Not found", "text/plain; charset=utf-8")
         ctype = {"html": "text/html", "js": "text/javascript", "css": "text/css", "svg": "image/svg+xml",
                  "json": "application/json"}.get(
             name.rsplit(".", 1)[-1], "application/octet-stream")
@@ -622,19 +623,19 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         err = lambda code, msg: self.send(code, json.dumps({"error": msg}).encode(), "application/json")
         if not urlparse(self.path).path.endswith("/api/clear"):
-            return err(404, "Nicht gefunden")
+            return err(404, "Not found")
         if not CLEAR:
-            return err(403, "Löschen ist ausgeschaltet (CLEAR=off)")
-        # Eigener Header: fremde Webseiten müssten dafür erst per CORS fragen, und das erlaubt der Server nie
+            return err(403, "Deleting is turned off (CLEAR=off)")
+        # Custom header: other websites would have to ask via CORS first, which this server never allows
         if self.headers.get("X-NPMcountdy") != "clear":
-            return err(403, "Nur aus der Oberfläche")
+            return err(403, "Only from the UI")
         try:
             body = json.loads(self.rfile.read(min(int(self.headers.get("Content-Length") or 0), 4096)) or b"{}")
             host = str(body.get("host", "")).strip().lower()
         except (ValueError, AttributeError):
-            return err(400, "Ungültige Anfrage")
+            return err(400, "Invalid request")
         if not host:
-            return err(400, "Keine Domain angegeben")
+            return err(400, "No domain given")
         try:
             return self.send(200, json.dumps(clear_host(host)).encode(), "application/json")
         except Exception as e:

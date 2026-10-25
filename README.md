@@ -1,91 +1,98 @@
 # NPMcountdy
 
-Version 0.0.1
+**English** · [Deutsch](README.de.md)
 
-Zeigt, wie viele Daten der Nginx Proxy Manager (NPM) ausgeliefert hat: pro Domain, pro Bereich
-(z. B. `/mapdata/` bei BoatSpeedy), pro Datei, pro Besucher, nach Tageszeit und nach Client-Art
-(Browser, BoatSpeedy-App, Nextcloud-Clients, Bots) und nach Ländern.
+Version 0.0.2
 
-- Liest `/opt/data/logs/proxy-host-*_access.log` des NPM nur mit (read-only), jede Minute.
-- Speichert die Zahlen in `./data/npmcountdy.db` (SQLite). Die Stundenwerte bleiben dauerhaft,
-  auch wenn der NPM seine Logs löscht. Dateien und Besucher-IPs werden nach `DETAIL_DAYS` (90) Tagen gelöscht.
-- Beim ersten Start werden auch die schon rotierten Logs (`.1`, `.2.gz` …) eingelesen.
-- Gezählt wird `[Length …]` aus dem NPM-Log, also nur, was ausgeliefert wurde. Uploads fehlen.
-- Länder kommen aus der freien Datenbank [DB-IP IP to Country Lite](https://db-ip.com/db/download/ip-to-country-lite)
-  (CC BY 4.0). Sie wird beim Start nach `./data` geladen und monatlich erneuert. Ist `download.db-ip.com`
-  nicht erreichbar, kommen dieselben Daten über [jsDelivr](https://www.jsdelivr.com/package/npm/@ip-location-db/dbip-country-mmdb).
-  Klappt beides nicht, kann man die Datei auch von Hand als `./data/dbip-country-lite.mmdb` ablegen.
-  Die Besucher-IPs verlassen dabei den Server nicht, nachgeschlagen wird nur lokal.
-- Kommt die Länderdatenbank erst später, werden die Länder nachträglich zugeordnet, soweit die
-  Besucher-IPs noch gespeichert sind (`DETAIL_DAYS`).
-- Die Weltkarte (`app/static/world.json`) stammt aus [Natural Earth](https://www.naturalearthdata.com/)
-  (gemeinfrei) und wird mit `tools/make_world.py` erzeugt, Anleitung im Kopf der Datei.
-- Nur Python-Standardbibliothek, keine Zusatzpakete.
+Shows how much data Nginx Proxy Manager (NPM) has served: per domain, per area
+(e.g. `/mapdata/` of BoatSpeedy), per file, per visitor, by time of day, by client type
+(browser, BoatSpeedy app, Nextcloud clients, bots) and by country.
 
-## Betrieb auf dem NPM (<NPM-IP>)
+- Follows NPM's `/opt/data/logs/proxy-host-*_access.log` read-only, once a minute.
+- Stores the figures in `./data/npmcountdy.db` (SQLite). Hourly figures are kept forever,
+  even after NPM deletes its logs. Files and visitor IPs are deleted after `DETAIL_DAYS` (90) days.
+- On the first start, logs that were already rotated (`.1`, `.2.gz` …) are read as well.
+- It counts `[Length …]` from the NPM log, so only data that was actually served. Uploads are not included.
+- Countries come from the free [DB-IP IP to Country Lite](https://db-ip.com/db/download/ip-to-country-lite)
+  database (CC BY 4.0). It is downloaded to `./data` on start and renewed monthly. If `download.db-ip.com`
+  cannot be reached, the same data is fetched via [jsDelivr](https://www.jsdelivr.com/package/npm/@ip-location-db/dbip-country-mmdb).
+  If both fail, you can put the file in place by hand as `./data/dbip-country-lite.mmdb`.
+  Visitor IPs never leave the server, lookups happen locally.
+- If the country database only arrives later, countries are assigned afterwards, as far as the
+  visitor IPs are still stored (`DETAIL_DAYS`).
+- The world map (`app/static/world.json`) is based on [Natural Earth](https://www.naturalearthdata.com/)
+  (public domain) and built with `tools/make_world.py`, see the header of that file.
+- The UI is available in English and German. It follows the browser language, the switch is at
+  the bottom of the menu on the left, and the browser remembers the choice.
+- Python standard library only, no extra packages.
+
+## Running it on the NPM host (<NPM-IP>)
 
 ```bash
 cd ~/npmcountdy
 sudo docker compose up -d --build
 ```
 
-Oberfläche: `http://<NPM-IP>:7881` mit den Unterseiten
+UI: `http://<NPM-IP>:7881` with these pages
 
-| Adresse | Inhalt |
+| Address | Content |
 |---|---|
-| `/` | Übersicht: Kennzahlen, Verlauf, Domains, Client-Arten, wichtigste Länder |
-| `/verteilung` | Bereiche, Tageszeit, Antworten, LAN oder Internet |
-| `/laender` | Weltkarte und alle Länder, `/laender?land=DE` zeigt ein Land im Detail |
-| `/besucher` | größte Besucher-IPs mit Land |
-| `/dateien` | größte Dateien und Pfade |
+| `/` | Overview: key figures, history, domains, client types, top countries |
+| `/traffic` | Areas, time of day, responses, LAN or internet |
+| `/countries` | World map and all countries, `/countries?country=DE` shows one country in detail |
+| `/visitors` | Top visitor IPs with country |
+| `/files` | Largest files and paths |
 
-Keine eigene Anmeldung. Nur im LAN betreiben. Als `traffic.example.com` über den NPM:
+The German addresses (`/verteilung`, `/laender?land=DE`, `/besucher`, `/dateien`) work as well.
 
-1. NPM Proxy Host auf `<NPM-IP>:7881`, Access List nur LAN
-2. Pi-hole Local DNS `traffic.example.com` auf `<NPM-IP>`
-3. Firewall, weil der NPM-Container die eigene LAN-Adresse anruft:
-   `sudo ufw allow from 172.16.0.0/12 to any port 7881 proto tcp comment 'NPMcountdy fuer NPM-Proxy'`
+There is no login. Only run it in your LAN. To reach it as `traffic.example.com` through NPM:
 
-## Einstellungen (docker-compose.yml)
+1. NPM proxy host pointing to `<NPM-IP>:7881`, access list LAN only
+2. Local DNS record (e.g. Pi-hole) `traffic.example.com` pointing to `<NPM-IP>`
+3. Firewall, because the NPM container calls the host's own LAN address:
+   `sudo ufw allow from 172.16.0.0/12 to any port 7881 proto tcp comment 'NPMcountdy for NPM proxy'`
 
-| Variable | Standard | Bedeutung |
+## Settings (docker-compose.yml)
+
+| Variable | Default | Meaning |
 |---|---|---|
-| `INTERVAL` | 60 | Sekunden zwischen zwei Einlesevorgängen |
-| `DETAIL_DAYS` | 90 | Aufbewahrung von Dateien und Besucher-IPs |
-| `TZ` | Europe/Berlin | Zeitzone für Tage und Uhrzeiten |
-| `NPM_LOGS` | /opt/data/logs | Log-Ordner des NPM auf dem Host |
-| `CLEAR` | on | Daten einer Domain in der Oberfläche löschen, `off` schaltet das ab |
-| `GEOIP` | on | Länderzuordnung, `off` schaltet sie ab |
-| `GEOIP_URL` | leer | eigene Adresse für die MMDB-Datei (auch `.gz`), leer: DB-IP des aktuellen Monats |
+| `INTERVAL` | 60 | Seconds between two log reads |
+| `DETAIL_DAYS` | 90 | How long files and visitor IPs are kept |
+| `TZ` | Europe/Berlin | Time zone for days and hours |
+| `NPM_LOGS` | /opt/data/logs | NPM log folder on the host |
+| `CLEAR` | on | Allow deleting a domain's data in the UI, `off` disables it |
+| `GEOIP` | on | Country lookup, `off` disables it |
+| `GEOIP_URL` | empty | Custom address for the MMDB file (`.gz` works too), empty: DB-IP of the current month |
 
-## Echte Besucher-IP hinter Cloudflare
+## Real visitor IP behind Cloudflare
 
-Läuft eine Domain über Cloudflare (orange Wolke), steht im NPM-Log statt des Besuchers die Adresse
-eines Cloudflare-Servers. NPMcountdy zeigt diese Anfragen unter Länder als „Cloudflare, Herkunft unbekannt“.
+If a domain is proxied by Cloudflare (orange cloud), the NPM log contains the address of a
+Cloudflare server instead of the visitor. NPMcountdy lists these requests under countries as
+"Cloudflare, origin unknown".
 
-Der NPM vertraut den Cloudflare-Adressen schon (er lädt ihre Liste beim Start), liest aber den Header
-`X-Real-IP`, den Cloudflare nicht mitschickt. Abhilfe für alle Proxy Hosts auf einmal: im Datenordner
-des NPM die Datei `nginx/custom/server_proxy.conf` anlegen mit
+NPM already trusts the Cloudflare addresses (it loads their list on start), but reads the header
+`X-Real-IP`, which Cloudflare does not send. Fix for all proxy hosts at once: in NPM's data folder,
+create the file `nginx/custom/server_proxy.conf` containing
 
 ```nginx
 real_ip_header CF-Connecting-IP;
 ```
 
-und den NPM neu laden: `sudo docker exec <npm-container> nginx -s reload`. Danach stehen im Log die
-echten Adressen. Den Header nimmt nginx nur von Cloudflare und aus dem LAN an. Bei
-`IP_RANGES_FETCH_ENABLED=false` im NPM fehlt die Cloudflare-Liste, dann wirkt die Zeile nicht.
-Auch andere Programme, die die NPM-Logs lesen (z. B. CrowdSec), sehen danach die echten IPs.
+and reload NPM: `sudo docker exec <npm-container> nginx -s reload`. From then on the log contains the
+real addresses. nginx only accepts the header from Cloudflare and from the LAN. With
+`IP_RANGES_FETCH_ENABLED=false` in NPM the Cloudflare list is missing and the line has no effect.
+Other programs reading the NPM logs (e.g. CrowdSec) will see the real IPs as well.
 
-## Daten einer Domain löschen
+## Deleting a domain's data
 
-Domain im Menü links wählen, darunter „Daten dieser Domain löschen“ und bestätigen. Gelöscht werden
-alle gespeicherten Zahlen dieser Domain in `./data/npmcountdy.db`: Verlauf, Dateien, Besucher und Länder.
-Die Logdateien des NPM bleiben unverändert und werden auch nicht erneut eingelesen. Kommen neue
-Zugriffe auf die Domain, wird ab dann wieder gezählt. Praktisch für alte Domains, die es nicht mehr gibt.
+Pick the domain in the menu on the left, click "Delete data for this domain" below it and confirm.
+This deletes all stored figures of that domain in `./data/npmcountdy.db`: history, files, visitors and
+countries. NPM's log files stay untouched and are not read again. New requests to the domain are
+counted from then on. Handy for old domains that no longer exist.
 
-Weil es keine Anmeldung gibt, kann das jeder, der die Oberfläche erreicht. Mit `CLEAR: "off"` ist es abgeschaltet.
+Since there is no login, anyone who can reach the UI can do this. `CLEAR: "off"` disables it.
 
-## Neu anfangen
+## Starting over
 
 ```bash
 sudo docker compose down

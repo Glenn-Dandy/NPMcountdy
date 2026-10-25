@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="de">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -14,111 +14,120 @@
     <img src="icon.svg" alt="" width="28" height="28">
     <div>
       <h1>NPMcountdy</h1>
-      <p class="sub">Datenverkehr über den Nginx Proxy Manager</p>
+      <p class="sub" data-i18n="tagline">Traffic served by Nginx Proxy Manager</p>
     </div>
   </div>
 
-  <nav class="side-group nav" id="nav" aria-label="Seiten">
-    <a href="./" data-page="overview">Übersicht</a>
-    <a href="verteilung" data-page="traffic">Verteilung</a>
-    <a href="laender" data-page="geo">Länder</a>
-    <a href="besucher" data-page="visitors">Besucher</a>
-    <a href="dateien" data-page="paths">Dateien und Pfade</a>
+  <nav class="side-group nav" id="nav" data-i18n-aria="nav_label" aria-label="Pages">
+    <a href="./" data-page="overview" data-i18n="page_overview">Overview</a>
+    <a href="traffic" data-page="traffic" data-i18n="page_traffic">Breakdown</a>
+    <a href="countries" data-page="geo" data-i18n="page_geo">Countries</a>
+    <a href="visitors" data-page="visitors" data-i18n="page_visitors">Visitors</a>
+    <a href="files" data-page="paths" data-i18n="page_paths">Files and paths</a>
   </nav>
 
   <div class="side-group">
-    <p class="side-label">Zeitraum</p>
-    <div class="range" id="range" role="group" aria-label="Zeitraum">
-      <button data-days="1">24 Stunden</button>
-      <button data-days="7">7 Tage</button>
-      <button data-days="30">30 Tage</button>
-      <button data-days="90">90 Tage</button>
-      <button data-days="365">1 Jahr</button>
+    <p class="side-label" data-i18n="range">Time range</p>
+    <div class="range" id="range" role="group" data-i18n-aria="range" aria-label="Time range">
+      <button data-days="1" data-i18n="range_1">24 hours</button>
+      <button data-days="7" data-i18n="range_7">7 days</button>
+      <button data-days="30" data-i18n="range_30">30 days</button>
+      <button data-days="90" data-i18n="range_90">90 days</button>
+      <button data-days="365" data-i18n="range_365">1 year</button>
     </div>
   </div>
 
   <div class="side-group">
-    <p class="side-label">Domain</p>
-    <select id="host" aria-label="Domain">
-      <option value="">Alle Domains</option>
+    <p class="side-label" data-i18n="domain">Domain</p>
+    <select id="host" data-i18n-aria="domain" aria-label="Domain">
+      <option value="">All domains</option>
     </select>
-    <button class="link danger" id="clear-open" hidden>Daten dieser Domain löschen</button>
+    <button class="link danger" id="clear-open" data-i18n="clear_open" hidden>Delete data for this domain</button>
     <div class="clear-box" id="clear-box" hidden>
-      <p>Alle gespeicherten Zahlen zu <b id="clear-host"></b> löschen? Die Logdateien des NPM bleiben unverändert, neue Zugriffe werden weiter gezählt.</p>
-      <div class="clear-actions"><button class="danger-btn" id="clear-yes">Löschen</button><button id="clear-no">Abbrechen</button></div>
+      <p id="clear-ask"></p>
+      <div class="clear-actions"><button class="danger-btn" id="clear-yes" data-i18n="clear_yes">Delete</button><button id="clear-no" data-i18n="clear_no">Cancel</button></div>
     </div>
     <p class="clear-msg" id="clear-msg" hidden></p>
+  </div>
+
+  <div class="side-group">
+    <p class="side-label" data-i18n="language">Language</p>
+    <div class="lang" id="lang" role="group" data-i18n-aria="language" aria-label="Language">
+      <button data-lang="en" lang="en">English</button>
+      <button data-lang="de" lang="de">Deutsch</button>
+    </div>
   </div>
 </aside>
 
 <div class="content">
 <main>
-  <section class="page" data-page="overview" data-title="Übersicht">
-    <h2 class="page-title">Übersicht</h2>
+  <section class="page" data-page="overview">
+    <h2 class="page-title" data-i18n="page_overview">Overview</h2>
     <div class="kpis">
-      <div class="kpi"><span class="label">Datenmenge</span><span class="value" id="k-bytes">…</span><span class="hint" id="k-bytes-day"></span></div>
-      <div class="kpi"><span class="label">Anfragen</span><span class="value" id="k-req">…</span><span class="hint" id="k-req-avg"></span></div>
-      <div class="kpi"><span class="label">ins Internet</span><span class="value" id="k-inet">…</span><span class="hint" id="k-inet-share"></span></div>
-      <div class="kpi"><span class="label">Besucher-IPs</span><span class="value" id="k-vis">…</span><span class="hint">verschiedene Adressen</span></div>
+      <div class="kpi"><span class="label" data-i18n="kpi_bytes">Data volume</span><span class="value" id="k-bytes">…</span><span class="hint" id="k-bytes-day"></span></div>
+      <div class="kpi"><span class="label" data-i18n="kpi_requests">Requests</span><span class="value" id="k-req">…</span><span class="hint" id="k-req-avg"></span></div>
+      <div class="kpi"><span class="label" data-i18n="kpi_internet">To the internet</span><span class="value" id="k-inet">…</span><span class="hint" id="k-inet-share"></span></div>
+      <div class="kpi"><span class="label" data-i18n="kpi_visitors">Visitor IPs</span><span class="value" id="k-vis">…</span><span class="hint" data-i18n="kpi_visitors_hint">distinct addresses</span></div>
     </div>
     <section class="card wide">
       <div class="card-head">
-        <h3 id="chart-title">Datenmenge pro Tag</h3>
+        <h3 id="chart-title">Data per day</h3>
         <div class="legend" id="legend"></div>
       </div>
       <div class="chart" id="chart"></div>
     </section>
     <div class="grid">
       <section class="card"><h3 id="t-group">Domains</h3><div class="bars" id="b-group"></div></section>
-      <section class="card"><h3>Wer lädt?</h3><div class="bars" id="b-kinds"></div></section>
-      <section class="card"><h3>Länder</h3><div class="bars" id="b-countries-top"></div><a class="more" href="laender" data-link>Alle Länder und Weltkarte</a></section>
+      <section class="card"><h3 data-i18n="who">Who is downloading?</h3><div class="bars" id="b-kinds"></div></section>
+      <section class="card"><h3 data-i18n="countries">Countries</h3><div class="bars" id="b-countries-top"></div><a class="more" href="countries" data-page="geo" data-link data-i18n="all_countries_link">All countries and world map</a></section>
     </div>
   </section>
 
-  <section class="page" data-page="traffic" data-title="Verteilung" hidden>
-    <h2 class="page-title">Verteilung</h2>
+  <section class="page" data-page="traffic" hidden>
+    <h2 class="page-title" data-i18n="page_traffic">Breakdown</h2>
     <div class="grid two">
-      <section class="card"><h3>Bereiche</h3><div class="bars" id="b-areas"></div></section>
-      <section class="card"><h3>Tageszeit</h3><div class="hod" id="hod"></div><p class="note">Datenmenge nach Uhrzeit, über den ganzen Zeitraum</p></section>
-      <section class="card"><h3>Antworten</h3><div class="bars" id="b-status"></div></section>
-      <section class="card"><h3>LAN oder Internet</h3><div class="bars" id="b-nets"></div></section>
+      <section class="card"><h3 data-i18n="areas">Areas</h3><div class="bars" id="b-areas"></div></section>
+      <section class="card"><h3 data-i18n="hod">Time of day</h3><div class="hod" id="hod"></div><p class="note" data-i18n="hod_note">Data by time of day, over the whole period</p></section>
+      <section class="card"><h3 data-i18n="statuses">Responses</h3><div class="bars" id="b-status"></div></section>
+      <section class="card"><h3 data-i18n="nets">LAN or internet</h3><div class="bars" id="b-nets"></div></section>
     </div>
   </section>
 
-  <section class="page" data-page="geo" data-title="Länder" hidden>
-    <h2 class="page-title">Länder</h2>
+  <section class="page" data-page="geo" hidden>
+    <h2 class="page-title" data-i18n="page_geo">Countries</h2>
     <section class="card wide">
       <div class="card-head">
-        <h3>Weltkarte</h3>
-        <div class="map-legend"><span>wenig</span><i></i><span>viel Daten</span></div>
+        <h3 data-i18n="world_map">World map</h3>
+        <div class="map-legend"><span data-i18n="map_less">less</span><i></i><span data-i18n="map_more">more data</span></div>
       </div>
       <div class="map" id="map"></div>
       <p class="note" id="geo-note" hidden></p>
     </section>
     <div class="grid two geo-grid">
-      <section class="card"><h3>Alle Länder</h3><div class="bars" id="b-countries"></div></section>
+      <section class="card"><h3 data-i18n="all_countries">All countries</h3><div class="bars" id="b-countries"></div></section>
       <section class="card" id="country-card">
-        <div class="card-head"><h3 id="country-title">Land</h3><button class="link" id="country-clear" hidden>Auswahl aufheben</button></div>
+        <div class="card-head"><h3 id="country-title">Country</h3><button class="link" id="country-clear" data-i18n="clear_country" hidden>Clear selection</button></div>
         <div id="country-detail"></div>
       </section>
     </div>
   </section>
 
-  <section class="page" data-page="visitors" data-title="Besucher" hidden>
-    <h2 class="page-title">Besucher</h2>
-    <section class="card wide"><h3>Größte Besucher</h3><div class="table-wrap"><table id="t-clients"></table></div></section>
+  <section class="page" data-page="visitors" hidden>
+    <h2 class="page-title" data-i18n="page_visitors">Visitors</h2>
+    <section class="card wide"><h3 data-i18n="top_visitors">Top visitors</h3><div class="table-wrap"><table id="t-clients"></table></div></section>
   </section>
 
-  <section class="page" data-page="paths" data-title="Dateien und Pfade" hidden>
-    <h2 class="page-title">Dateien und Pfade</h2>
-    <section class="card wide"><h3>Größte Dateien und Pfade</h3><div class="table-wrap"><table id="t-paths"></table></div></section>
+  <section class="page" data-page="paths" hidden>
+    <h2 class="page-title" data-i18n="page_paths">Files and paths</h2>
+    <section class="card wide"><h3 data-i18n="top_paths">Largest files and paths</h3><div class="table-wrap"><table id="t-paths"></table></div></section>
   </section>
 </main>
 
-<footer id="foot">Lade Daten …</footer>
+<footer id="foot" data-i18n="loading">Loading data …</footer>
 </div>
 </div>
 <div class="tip" id="tip" hidden></div>
+<script src="i18n.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

@@ -1,6 +1,6 @@
 services:
-  # Liest die Access-Logs des NPM nur mit (read-only) und schreibt die Zahlen in ./data.
-  # Keine eigene Anmeldung: nur im LAN betreiben, z. B. hinter einem NPM-Host mit Access List.
+  # Reads the NPM access logs (read-only) and writes the figures to ./data.
+  # No login of its own: only run it in the LAN, e.g. behind an NPM proxy host with an access list.
   npmcountdy:
     build: .
     image: npmcountdy:local
@@ -10,10 +10,10 @@ services:
       - "7881:7881"
     environment:
       TZ: Europe/Berlin
-      INTERVAL: "60"       # Sekunden zwischen zwei Einlesevorgängen
-      DETAIL_DAYS: "90"    # so lange bleiben Dateien und Besucher-IPs gespeichert
-      CLEAR: "on"          # Daten einer Domain in der Oberfläche löschbar ("off" schaltet ab)
-      GEOIP: "on"          # Länder zu den IPs, lädt monatlich die freie Datenbank von DB-IP ("off" schaltet ab)
+      INTERVAL: "60"       # seconds between two log reads
+      DETAIL_DAYS: "90"    # days that files and visitor IPs are kept
+      CLEAR: "on"          # allow deleting a domain's data in the UI ("off" disables it)
+      GEOIP: "on"          # countries for IPs, downloads the free DB-IP database monthly ("off" disables it)
     volumes:
       - ${NPM_LOGS:-/opt/data/logs}:/logs:ro
       - ./data:/data
