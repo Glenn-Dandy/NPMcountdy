@@ -32,6 +32,8 @@ PAGES = {"", "verteilung", "laender", "besucher", "dateien"}  # Unterseiten, all
 GEOIP = os.environ.get("GEOIP", "on").lower() not in ("off", "0", "false", "no")
 GEOIP_PATH = os.environ.get("GEOIP_PATH", os.path.join(os.path.dirname(DB_PATH), "dbip-country-lite.mmdb"))
 GEOIP_URL = os.environ.get("GEOIP_URL", "")  # leer: DB-IP Country Lite des aktuellen Monats
+# dieselben DB-IP-Daten über das npm-CDN, falls download.db-ip.com nicht erreichbar ist
+GEOIP_MIRROR = "https://cdn.jsdelivr.net/npm/@ip-location-db/dbip-country-mmdb/dbip-country.mmdb"
 
 # https://www.cloudflare.com/ips/ : steht so eine Adresse im Log, ist die echte Besucher-IP unbekannt
 CLOUDFLARE = [ip_network(n) for n in (
@@ -193,8 +195,8 @@ def geo_download():
     now = datetime.now(TZ)
     prev = now.replace(day=1) - timedelta(days=1)
     urls = [GEOIP_URL] if GEOIP_URL else [
-        f"https://download.db-ip.com/free/dbip-country-lite-{m:%Y-%m}.mmdb.gz" for m in (now, prev)]
-    err = None
+        f"https://download.db-ip.com/free/dbip-country-lite-{m:%Y-%m}.mmdb.gz" for m in (now, prev)] + [GEOIP_MIRROR]
+    errors = []
     for url in urls:
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "NPMcountdy"})
@@ -207,8 +209,9 @@ def geo_download():
             os.replace(GEOIP_PATH + ".tmp", GEOIP_PATH)
             return
         except Exception as e:
-            err = f"{url}: {type(e).__name__}: {e}"
-    raise RuntimeError(err)
+            why = getattr(e, "reason", None) or e  # URLError verpackt die eigentliche Ursache
+            errors.append(f"{url}: {type(e).__name__}: {why}")
+    raise RuntimeError(" | ".join(errors))
 
 
 def geo_refresh():
@@ -219,13 +222,13 @@ def geo_refresh():
         mtime = os.path.getmtime(GEOIP_PATH)
     except OSError:
         mtime = None
-    if (mtime is None or time.time() - mtime > 32 * 86400) and time.time() - geo["tried"] > 3600:
+    if (mtime is None or time.time() - mtime > 32 * 86400) and time.time() - geo["tried"] > 600:
         geo["tried"] = time.time()
         try:
             geo_download()
             geo["error"] = None
             mtime = os.path.getmtime(GEOIP_PATH)
-        except Exception as e:  # mit der alten Datei weitermachen, in einer Stunde neu versuchen
+        except Exception as e:  # mit der alten Datei weitermachen, in 10 Minuten neu versuchen
             geo["error"] = str(e)
     if mtime is not None and mtime != geo["mtime"]:
         with open(GEOIP_PATH, "rb") as f:
@@ -233,6 +236,21 @@ def geo_refresh():
         with state_lock:
             geo.update(db=db, mtime=mtime)
             country_cache.clear()
+        rebuild_countries()
+
+
+def rebuild_countries():
+    """Ordnet Länder neu zu, die ohne Datenbank als ?? gespeichert wurden, soweit die IPs noch da sind."""
+    con = db_connect()
+    first = con.execute("SELECT MIN(day) FROM daily_clients").fetchone()[0]
+    if first and con.execute("SELECT 1 FROM daily_countries WHERE country = '??' AND day >= ? LIMIT 1", (first,)).fetchone():
+        agg = {}
+        for day, host, client, b, r in con.execute("SELECT day, host, client, bytes, requests FROM daily_clients"):
+            v = agg.setdefault((day, host, country_of(client)), [0, 0]); v[0] += b; v[1] += r
+        con.execute("DELETE FROM daily_countries WHERE day >= ?", (first,))
+        con.executemany("INSERT INTO daily_countries VALUES (?,?,?,?,?)", [k + tuple(v) for k, v in agg.items()])
+        con.commit()
+    con.close()
 
 
 def country_of(client):

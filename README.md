@@ -10,8 +10,12 @@ Zeigt, wie viele Daten der Nginx Proxy Manager (NPM) ausgeliefert hat: pro Domai
 - Beim ersten Start werden auch die schon rotierten Logs (`.1`, `.2.gz` …) eingelesen.
 - Gezählt wird `[Length …]` aus dem NPM-Log, also nur, was ausgeliefert wurde. Uploads fehlen.
 - Länder kommen aus der freien Datenbank [DB-IP IP to Country Lite](https://db-ip.com/db/download/ip-to-country-lite)
-  (CC BY 4.0). Sie wird beim Start nach `./data` geladen und monatlich erneuert. Die Besucher-IPs
-  verlassen dabei den Server nicht, nachgeschlagen wird nur lokal.
+  (CC BY 4.0). Sie wird beim Start nach `./data` geladen und monatlich erneuert. Ist `download.db-ip.com`
+  nicht erreichbar, kommen dieselben Daten über [jsDelivr](https://www.jsdelivr.com/package/npm/@ip-location-db/dbip-country-mmdb).
+  Klappt beides nicht, kann man die Datei auch von Hand als `./data/dbip-country-lite.mmdb` ablegen.
+  Die Besucher-IPs verlassen dabei den Server nicht, nachgeschlagen wird nur lokal.
+- Kommt die Länderdatenbank erst später, werden die Länder nachträglich zugeordnet, soweit die
+  Besucher-IPs noch gespeichert sind (`DETAIL_DAYS`).
 - Die Weltkarte (`app/static/world.json`) stammt aus [Natural Earth](https://www.naturalearthdata.com/)
   (gemeinfrei) und wird mit `tools/make_world.py` erzeugt, Anleitung im Kopf der Datei.
 - Nur Python-Standardbibliothek, keine Zusatzpakete.
