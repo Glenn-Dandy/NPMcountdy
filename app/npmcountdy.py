@@ -21,6 +21,7 @@ from ipaddress import ip_address, ip_network
 from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo
 
+VERSION = "0.0.1"
 LOG_DIR = os.environ.get("LOG_DIR", "/logs")
 DB_PATH = os.environ.get("DB_PATH", "/data/npmcountdy.db")
 PORT = int(os.environ.get("PORT", "7881"))
@@ -582,7 +583,7 @@ def meta():
         s = dict(status)
     geo_info = {"geo": GEOIP, "geo_ready": geo["db"] is not None, "geo_error": geo["error"],
                 "geo_date": datetime.fromtimestamp(geo["mtime"], TZ).strftime("%Y-%m-%d") if geo["mtime"] else None}
-    return {"hosts": hosts, "first_day": first, "detail_days": DETAIL_DAYS, "clear": CLEAR, **s, **geo_info}
+    return {"version": VERSION, "hosts": hosts, "first_day": first, "detail_days": DETAIL_DAYS, "clear": CLEAR, **s, **geo_info}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -641,6 +642,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    print(f"NPMcountdy {VERSION}, Port {PORT}")
     db_init()
     threading.Thread(target=ingest_loop, daemon=True).start()
     ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()

@@ -384,6 +384,7 @@ async function loadMeta() {
   sel.value = cur;
   updateClear();
   const parts = [];
+  if (m.version) parts.push("NPMcountdy " + m.version);
   if (m.first_day) parts.push("Daten seit " + new Date(m.first_day + "T12:00").toLocaleDateString("de-DE"));
   if (m.last_ingest) parts.push("zuletzt eingelesen " + new Date(m.last_ingest * 1000).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" }) + " Uhr");
   parts.push(`Dateien und Besucher werden ${m.detail_days} Tage aufbewahrt`);

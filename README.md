@@ -1,5 +1,7 @@
 # NPMcountdy
 
+Version 0.0.1
+
 Zeigt, wie viele Daten der Nginx Proxy Manager (NPM) ausgeliefert hat: pro Domain, pro Bereich
 (z. B. `/mapdata/` bei BoatSpeedy), pro Datei, pro Besucher, nach Tageszeit und nach Client-Art
 (Browser, BoatSpeedy-App, Nextcloud-Clients, Bots) und nach Ländern.
