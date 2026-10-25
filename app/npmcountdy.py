@@ -31,6 +31,7 @@ STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 PAGES = {"", "verteilung", "laender", "besucher", "dateien"}  # Unterseiten, alle liefern index.html
 GEOIP = os.environ.get("GEOIP", "on").lower() not in ("off", "0", "false", "no")
 GEOIP_PATH = os.environ.get("GEOIP_PATH", os.path.join(os.path.dirname(DB_PATH), "dbip-country-lite.mmdb"))
+CLEAR = os.environ.get("CLEAR", "on").lower() not in ("off", "0", "false", "no")  # Domain-Daten in der Oberfläche löschbar
 GEOIP_URL = os.environ.get("GEOIP_URL", "")  # leer: DB-IP Country Lite des aktuellen Monats
 # dieselben DB-IP-Daten über das npm-CDN, falls download.db-ip.com nicht erreichbar ist
 GEOIP_MIRROR = "https://cdn.jsdelivr.net/npm/@ip-location-db/dbip-country-mmdb/dbip-country.mmdb"
@@ -58,6 +59,7 @@ KIND_RULES = [
 ]
 
 state_lock = threading.Lock()
+db_lock = threading.Lock()  # Einlesen und Löschen nie gleichzeitig, sonst kommen gelöschte Zeilen zurück
 status = {"last_ingest": None, "last_lines": 0, "last_error": None}
 
 
@@ -457,7 +459,8 @@ def ingest_loop():
         except Exception as e:
             geo["error"] = f"{type(e).__name__}: {e}"
         try:
-            n = ingest()
+            with db_lock:
+                n = ingest()
             with state_lock:
                 status.update(last_ingest=int(time.time()), last_lines=n, last_error=None)
         except Exception as e:  # weiterlaufen, Fehler in der Oberfläche anzeigen
@@ -557,6 +560,19 @@ def summary(q):
     return result
 
 
+def clear_host(host):
+    """Löscht alle gespeicherten Zahlen einer Domain. Die Logdateien des NPM bleiben unverändert."""
+    with db_lock:
+        con = db_connect()
+        b, r = con.execute("SELECT COALESCE(SUM(bytes),0), COALESCE(SUM(requests),0) FROM hourly WHERE host = ?",
+                           (host,)).fetchone()
+        for table in ("hourly", "daily_paths", "daily_clients", "daily_countries"):
+            con.execute(f"DELETE FROM {table} WHERE host = ?", (host,))
+        con.commit()
+        con.close()
+    return {"host": host, "bytes": b, "requests": r}
+
+
 def meta():
     con = db_connect()
     hosts = [r[0] for r in con.execute("SELECT host FROM hourly GROUP BY host ORDER BY SUM(bytes) DESC")]
@@ -566,7 +582,7 @@ def meta():
         s = dict(status)
     geo_info = {"geo": GEOIP, "geo_ready": geo["db"] is not None, "geo_error": geo["error"],
                 "geo_date": datetime.fromtimestamp(geo["mtime"], TZ).strftime("%Y-%m-%d") if geo["mtime"] else None}
-    return {"hosts": hosts, "first_day": first, "detail_days": DETAIL_DAYS, **s, **geo_info}
+    return {"hosts": hosts, "first_day": first, "detail_days": DETAIL_DAYS, "clear": CLEAR, **s, **geo_info}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -600,6 +616,28 @@ class Handler(BaseHTTPRequestHandler):
             name.rsplit(".", 1)[-1], "application/octet-stream")
         with open(path, "rb") as f:
             self.send(200, f.read(), ctype + "; charset=utf-8")
+
+
+    def do_POST(self):
+        err = lambda code, msg: self.send(code, json.dumps({"error": msg}).encode(), "application/json")
+        if not urlparse(self.path).path.endswith("/api/clear"):
+            return err(404, "Nicht gefunden")
+        if not CLEAR:
+            return err(403, "Löschen ist ausgeschaltet (CLEAR=off)")
+        # Eigener Header: fremde Webseiten müssten dafür erst per CORS fragen, und das erlaubt der Server nie
+        if self.headers.get("X-NPMcountdy") != "clear":
+            return err(403, "Nur aus der Oberfläche")
+        try:
+            body = json.loads(self.rfile.read(min(int(self.headers.get("Content-Length") or 0), 4096)) or b"{}")
+            host = str(body.get("host", "")).strip().lower()
+        except (ValueError, AttributeError):
+            return err(400, "Ungültige Anfrage")
+        if not host:
+            return err(400, "Keine Domain angegeben")
+        try:
+            return self.send(200, json.dumps(clear_host(host)).encode(), "application/json")
+        except Exception as e:
+            return err(500, str(e))
 
 
 def main():

@@ -12,6 +12,7 @@ services:
       TZ: Europe/Berlin
       INTERVAL: "60"       # Sekunden zwischen zwei Einlesevorgängen
       DETAIL_DAYS: "90"    # so lange bleiben Dateien und Besucher-IPs gespeichert
+      CLEAR: "on"          # Daten einer Domain in der Oberfläche löschbar ("off" schaltet ab)
       GEOIP: "on"          # Länder zu den IPs, lädt monatlich die freie Datenbank von DB-IP ("off" schaltet ab)
     volumes:
       - ${NPM_LOGS:-/opt/data/logs}:/logs:ro

@@ -52,6 +52,7 @@ Keine eigene Anmeldung. Nur im LAN betreiben. Als `traffic.example.com` über de
 | `DETAIL_DAYS` | 90 | Aufbewahrung von Dateien und Besucher-IPs |
 | `TZ` | Europe/Berlin | Zeitzone für Tage und Uhrzeiten |
 | `NPM_LOGS` | /opt/data/logs | Log-Ordner des NPM auf dem Host |
+| `CLEAR` | on | Daten einer Domain in der Oberfläche löschen, `off` schaltet das ab |
 | `GEOIP` | on | Länderzuordnung, `off` schaltet sie ab |
 | `GEOIP_URL` | leer | eigene Adresse für die MMDB-Datei (auch `.gz`), leer: DB-IP des aktuellen Monats |
 
@@ -72,6 +73,15 @@ und den NPM neu laden: `sudo docker exec <npm-container> nginx -s reload`. Danac
 echten Adressen. Den Header nimmt nginx nur von Cloudflare und aus dem LAN an. Bei
 `IP_RANGES_FETCH_ENABLED=false` im NPM fehlt die Cloudflare-Liste, dann wirkt die Zeile nicht.
 Auch andere Programme, die die NPM-Logs lesen (z. B. CrowdSec), sehen danach die echten IPs.
+
+## Daten einer Domain löschen
+
+Domain im Menü links wählen, darunter „Daten dieser Domain löschen“ und bestätigen. Gelöscht werden
+alle gespeicherten Zahlen dieser Domain in `./data/npmcountdy.db`: Verlauf, Dateien, Besucher und Länder.
+Die Logdateien des NPM bleiben unverändert und werden auch nicht erneut eingelesen. Kommen neue
+Zugriffe auf die Domain, wird ab dann wieder gezählt. Praktisch für alte Domains, die es nicht mehr gibt.
+
+Weil es keine Anmeldung gibt, kann das jeder, der die Oberfläche erreicht. Mit `CLEAR: "off"` ist es abgeschaltet.
 
 ## Neu anfangen
 

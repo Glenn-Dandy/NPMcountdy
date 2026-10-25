@@ -42,6 +42,12 @@
     <select id="host" aria-label="Domain">
       <option value="">Alle Domains</option>
     </select>
+    <button class="link danger" id="clear-open" hidden>Daten dieser Domain löschen</button>
+    <div class="clear-box" id="clear-box" hidden>
+      <p>Alle gespeicherten Zahlen zu <b id="clear-host"></b> löschen? Die Logdateien des NPM bleiben unverändert, neue Zugriffe werden weiter gezählt.</p>
+      <div class="clear-actions"><button class="danger-btn" id="clear-yes">Löschen</button><button id="clear-no">Abbrechen</button></div>
+    </div>
+    <p class="clear-msg" id="clear-msg" hidden></p>
   </div>
 </aside>
 

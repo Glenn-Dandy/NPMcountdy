@@ -334,7 +334,44 @@ function setHost(h) {
   state.host = h;
   store.set("host", h);
   $("host").value = h;
+  $("clear-msg").hidden = true;
+  updateClear();
   load();
+}
+
+// Löschen gibt es nur für eine gewählte Domain und nur, wenn der Server es erlaubt (CLEAR)
+function updateClear() {
+  const on = Boolean(state.meta?.clear && state.host);
+  if (!on) $("clear-box").hidden = true;
+  $("clear-open").hidden = !on || !$("clear-box").hidden;
+}
+
+function showClearMsg(text, err = false) {
+  $("clear-msg").textContent = text;
+  $("clear-msg").classList.toggle("err", err);
+  $("clear-msg").hidden = false;
+}
+
+async function clearHost() {
+  const host = state.host;
+  $("clear-yes").disabled = true;
+  try {
+    const r = await fetch("api/clear", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-NPMcountdy": "clear" },
+      body: JSON.stringify({ host }),
+    });
+    const res = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(res.error || "Fehler " + r.status);
+    $("clear-box").hidden = true;
+    setHost("");
+    showClearMsg(`${host}: ${fmtBytes(res.bytes)} aus ${nf.format(res.requests)} Anfragen gelöscht.`);
+    loadMeta().catch(() => {});
+  } catch (e) {
+    showClearMsg("Löschen fehlgeschlagen: " + e.message, true);
+  } finally {
+    $("clear-yes").disabled = false;
+  }
 }
 
 async function loadMeta() {
@@ -345,6 +382,7 @@ async function loadMeta() {
   sel.innerHTML = '<option value="">Alle Domains</option>' + m.hosts.map((h) => `<option>${esc(h)}</option>`).join("");
   if (cur && !m.hosts.includes(cur)) sel.insertAdjacentHTML("beforeend", `<option>${esc(cur)}</option>`);
   sel.value = cur;
+  updateClear();
   const parts = [];
   if (m.first_day) parts.push("Daten seit " + new Date(m.first_day + "T12:00").toLocaleDateString("de-DE"));
   if (m.last_ingest) parts.push("zuletzt eingelesen " + new Date(m.last_ingest * 1000).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" }) + " Uhr");
@@ -375,6 +413,14 @@ document.querySelectorAll("#range button").forEach((b) => b.addEventListener("cl
   load();
 }));
 $("host").addEventListener("change", (e) => setHost(e.target.value));
+$("clear-open").addEventListener("click", () => {
+  $("clear-host").textContent = state.host;
+  $("clear-box").hidden = false;
+  $("clear-msg").hidden = true;
+  updateClear();
+});
+$("clear-no").addEventListener("click", () => { $("clear-box").hidden = true; updateClear(); });
+$("clear-yes").addEventListener("click", clearHost);
 $("country-clear").addEventListener("click", () => setCountry(state.country));
 document.querySelectorAll("#nav a, a[data-link]").forEach((a) => a.addEventListener("click", (e) => {
   if (e.ctrlKey || e.metaKey || e.shiftKey || e.button) return;  // neuer Tab soll weiter gehen
