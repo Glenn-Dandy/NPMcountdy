@@ -7,14 +7,16 @@ const STATUS_NAMES = {
   "4xx": "4xx abgelehnt oder nicht gefunden",
   "5xx": "5xx Serverfehler",
 };
+const SPECIAL_CC = { LAN: "Heimnetz (LAN)", CLOUDFLARE: "Cloudflare, Herkunft unbekannt", "??": "Unbekannt" };
 const nf = new Intl.NumberFormat("de-DE");
+const regionNames = (() => { try { return new Intl.DisplayNames(["de"], { type: "region" }); } catch { return null; } })();
 const $ = (id) => document.getElementById(id);
 
 const store = {
   get(k, d) { try { return localStorage.getItem(k) ?? d; } catch { return d; } },
   set(k, v) { try { localStorage.setItem(k, v); } catch { /* egal */ } },
 };
-const state = { days: Number(store.get("days", "7")) || 7, host: store.get("host", ""), data: null };
+const state = { days: Number(store.get("days", "7")) || 7, host: store.get("host", ""), data: null, meta: null };
 
 function color(i) {
   return getComputedStyle(document.documentElement).getPropertyValue(COLORS[Math.min(i, COLORS.length - 1)]).trim();
@@ -27,6 +29,13 @@ function fmtBytes(b) {
   const digits = b >= 100 || i === 0 ? 0 : b >= 10 ? 1 : 2;
   return b.toLocaleString("de-DE", { minimumFractionDigits: digits, maximumFractionDigits: digits }) + " " + units[i];
 }
+// Flagge aus den Regional-Indicator-Zeichen, Windows zeigt dafür nur die zwei Buchstaben
+const flag = (cc) => (/^[A-Z]{2}$/.test(cc) ? String.fromCodePoint(...[...cc].map((c) => 0x1f1a5 + c.charCodeAt(0))) : "");
+function countryName(cc) {
+  if (SPECIAL_CC[cc]) return SPECIAL_CC[cc];
+  try { return regionNames?.of(cc) || cc; } catch { return cc; }
+}
+const countryLabel = (cc) => (flag(cc) ? flag(cc) + " " : "") + countryName(cc);
 const pct = (a, b) => (b ? Math.round((a / b) * 100) : 0) + " %";
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
@@ -125,7 +134,7 @@ function renderBars(id, rows, opts = {}) {
   const total = rows.reduce((a, r) => a + r.bytes, 0);
   const top = rows[0].bytes || 1;
   el.innerHTML = rows.slice(0, opts.limit || 8).map((r, i) => {
-    const name = opts.names?.[r.name] || r.name;
+    const name = opts.label ? opts.label(r.name) : opts.names?.[r.name] || r.name;
     return `<div class="bar-row${opts.click ? " click" : ""}" data-name="${esc(r.name)}" title="${nf.format(r.requests)} Anfragen">
       <span class="n">${esc(name)}${opts.sub && r.sub ? `<small>${esc(r.sub)}</small>` : ""}</span>
       <span class="v">${r.bytes ? fmtBytes(r.bytes) + " · " + pct(r.bytes, total) : nf.format(r.requests) + " Anfragen, keine Daten"}</span>
@@ -178,11 +187,26 @@ function render(d) {
   renderBars("b-status", d.statuses, { names: STATUS_NAMES });
   renderBars("b-nets", d.nets);
   renderHod(d.hod);
+  renderBars("b-countries", d.countries, { limit: 15, mono: true, label: countryLabel });
+  renderGeoNote(d);
 
   renderTable("t-paths", ["Pfad", "Daten", "Anfragen"], d.paths.map((p) =>
     `<tr><td class="path">${esc(p.name)}${d.host ? "" : `<span class="host">${esc(p.host)}</span>`}</td><td class="num">${fmtBytes(p.bytes)}</td><td class="num">${nf.format(p.requests)}</td></tr>`));
   renderTable("t-clients", ["Adresse", "Daten", "Anfragen"], d.clients.map((c) =>
-    `<tr><td>${esc(c.name)}<span class="badge">${esc(c.net)}</span></td><td class="num">${fmtBytes(c.bytes)}</td><td class="num">${nf.format(c.requests)}</td></tr>`));
+    `<tr><td>${esc(c.name)}<span class="badge">${esc(c.net)}</span><span class="host">${esc(countryLabel(c.cc))}</span></td><td class="num">${fmtBytes(c.bytes)}</td><td class="num">${nf.format(c.requests)}</td></tr>`));
+}
+
+function renderGeoNote(d) {
+  const m = state.meta || {};
+  const total = d.countries.reduce((a, c) => a + c.bytes, 0);
+  const cf = d.countries.find((c) => c.name === "CLOUDFLARE");
+  let note = "";
+  if (m.geo === false) note = "Länderzuordnung ist ausgeschaltet (GEOIP=off).";
+  else if (!m.geo_ready) note = m.geo_error ? "Länderdatenbank konnte nicht geladen werden: " + m.geo_error : "Länderdatenbank wird geladen …";
+  else if (cf && total && cf.bytes / total > 0.2) note = `${pct(cf.bytes, total)} der Daten gingen an Cloudflare-Adressen. `
+    + "Dort steht nicht die echte Besucher-IP im Log des NPM, Abhilfe siehe README.";
+  $("geo-note").textContent = note;
+  $("geo-note").hidden = !note;
 }
 
 // ---------- Steuerung ----------
@@ -196,6 +220,7 @@ function setHost(h) {
 
 async function loadMeta() {
   const m = await getJSON("api/meta");
+  state.meta = m;
   const sel = $("host");
   const cur = state.host;
   sel.innerHTML = '<option value="">Alle Domains</option>' + m.hosts.map((h) => `<option>${esc(h)}</option>`).join("");
@@ -206,7 +231,10 @@ async function loadMeta() {
   if (m.last_ingest) parts.push("zuletzt eingelesen " + new Date(m.last_ingest * 1000).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" }) + " Uhr");
   parts.push(`Dateien und Besucher werden ${m.detail_days} Tage aufbewahrt`);
   parts.push("gezählt wird nur, was ausgeliefert wurde (Downloads)");
-  $("foot").innerHTML = esc(parts.join(" · ")) + (m.last_error ? `<br><span class="err">Fehler beim Einlesen: ${esc(m.last_error)}</span>` : "");
+  if (m.geo_date) parts.push("Länderdatenbank vom " + new Date(m.geo_date + "T12:00").toLocaleDateString("de-DE"));
+  $("foot").innerHTML = esc(parts.join(" · "))
+    + (m.geo ? ' · <a href="https://db-ip.com" target="_blank" rel="noopener">IP Geolocation by DB-IP</a>' : "")
+    + (m.last_error ? `<br><span class="err">Fehler beim Einlesen: ${esc(m.last_error)}</span>` : "");
 }
 
 async function load() {
@@ -229,6 +257,15 @@ $("host").addEventListener("change", (e) => setHost(e.target.value));
 let rt;
 window.addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(() => state.data && renderChart(state.data), 120); });
 window.matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", () => state.data && render(state.data));
+
+// Menüpunkt des sichtbaren Abschnitts hervorheben
+const navLinks = [...document.querySelectorAll("#nav a")];
+if ("IntersectionObserver" in window) {
+  const io = new IntersectionObserver((entries) => entries.forEach((e) => {
+    if (e.isIntersecting) navLinks.forEach((a) => a.classList.toggle("on", a.getAttribute("href") === "#" + e.target.id));
+  }), { rootMargin: "-25% 0px -65% 0px" });
+  navLinks.forEach((a) => { const t = document.querySelector(a.getAttribute("href")); if (t) io.observe(t); });
+}
 
 loadMeta().catch(() => {}).finally(load);
 setInterval(() => { loadMeta().catch(() => {}); load(); }, 60000);

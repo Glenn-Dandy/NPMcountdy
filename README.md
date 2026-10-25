@@ -2,13 +2,16 @@
 
 Zeigt, wie viele Daten der Nginx Proxy Manager (NPM) ausgeliefert hat: pro Domain, pro Bereich
 (z. B. `/mapdata/` bei BoatSpeedy), pro Datei, pro Besucher, nach Tageszeit und nach Client-Art
-(Browser, BoatSpeedy-App, Nextcloud-Clients, Bots).
+(Browser, BoatSpeedy-App, Nextcloud-Clients, Bots) und nach Ländern.
 
 - Liest `/opt/data/logs/proxy-host-*_access.log` des NPM nur mit (read-only), jede Minute.
 - Speichert die Zahlen in `./data/npmcountdy.db` (SQLite). Die Stundenwerte bleiben dauerhaft,
   auch wenn der NPM seine Logs löscht. Dateien und Besucher-IPs werden nach `DETAIL_DAYS` (90) Tagen gelöscht.
 - Beim ersten Start werden auch die schon rotierten Logs (`.1`, `.2.gz` …) eingelesen.
 - Gezählt wird `[Length …]` aus dem NPM-Log, also nur, was ausgeliefert wurde. Uploads fehlen.
+- Länder kommen aus der freien Datenbank [DB-IP IP to Country Lite](https://db-ip.com/db/download/ip-to-country-lite)
+  (CC BY 4.0). Sie wird beim Start nach `./data` geladen und monatlich erneuert. Die Besucher-IPs
+  verlassen dabei den Server nicht, nachgeschlagen wird nur lokal.
 - Nur Python-Standardbibliothek, keine Zusatzpakete.
 
 ## Betrieb auf dem NPM (<NPM-IP>)
@@ -35,6 +38,26 @@ Keine eigene Anmeldung. Nur im LAN betreiben. Als `traffic.example.com` über de
 | `DETAIL_DAYS` | 90 | Aufbewahrung von Dateien und Besucher-IPs |
 | `TZ` | Europe/Berlin | Zeitzone für Tage und Uhrzeiten |
 | `NPM_LOGS` | /opt/data/logs | Log-Ordner des NPM auf dem Host |
+| `GEOIP` | on | Länderzuordnung, `off` schaltet sie ab |
+| `GEOIP_URL` | leer | eigene Adresse für die MMDB-Datei (auch `.gz`), leer: DB-IP des aktuellen Monats |
+
+## Echte Besucher-IP hinter Cloudflare
+
+Läuft eine Domain über Cloudflare (orange Wolke), steht im NPM-Log statt des Besuchers die Adresse
+eines Cloudflare-Servers. NPMcountdy zeigt diese Anfragen unter Länder als „Cloudflare, Herkunft unbekannt“.
+
+Der NPM vertraut den Cloudflare-Adressen schon (er lädt ihre Liste beim Start), liest aber den Header
+`X-Real-IP`, den Cloudflare nicht mitschickt. Abhilfe für alle Proxy Hosts auf einmal: im Datenordner
+des NPM die Datei `nginx/custom/server_proxy.conf` anlegen mit
+
+```nginx
+real_ip_header CF-Connecting-IP;
+```
+
+und den NPM neu laden: `sudo docker exec <npm-container> nginx -s reload`. Danach stehen im Log die
+echten Adressen. Den Header nimmt nginx nur von Cloudflare und aus dem LAN an. Bei
+`IP_RANGES_FETCH_ENABLED=false` im NPM fehlt die Cloudflare-Liste, dann wirkt die Zeile nicht.
+Auch andere Programme, die die NPM-Logs lesen (z. B. CrowdSec), sehen danach die echten IPs.
 
 ## Neu anfangen
 

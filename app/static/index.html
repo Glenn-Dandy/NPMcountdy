@@ -8,7 +8,8 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<header class="top">
+<div class="layout">
+<aside class="side">
   <div class="brand">
     <img src="icon.svg" alt="" width="28" height="28">
     <div>
@@ -16,37 +17,54 @@
       <p class="sub">Datenverkehr über den Nginx Proxy Manager</p>
     </div>
   </div>
-  <div class="controls">
-    <div class="seg" id="range" role="group" aria-label="Zeitraum">
-      <button data-days="1">24 Std</button>
+
+  <div class="side-group">
+    <p class="side-label">Zeitraum</p>
+    <div class="range" id="range" role="group" aria-label="Zeitraum">
+      <button data-days="1">24 Stunden</button>
       <button data-days="7">7 Tage</button>
       <button data-days="30">30 Tage</button>
       <button data-days="90">90 Tage</button>
       <button data-days="365">1 Jahr</button>
     </div>
+  </div>
+
+  <div class="side-group">
+    <p class="side-label">Domain</p>
     <select id="host" aria-label="Domain">
       <option value="">Alle Domains</option>
     </select>
   </div>
-</header>
 
+  <nav class="side-group nav" id="nav" aria-label="Abschnitte">
+    <p class="side-label">Abschnitte</p>
+    <a href="#s-overview">Übersicht</a>
+    <a href="#s-traffic">Verteilung</a>
+    <a href="#s-geo">Länder und Besucher</a>
+    <a href="#s-paths">Dateien und Pfade</a>
+  </nav>
+</aside>
+
+<div class="content">
 <main>
-  <section class="kpis">
-    <div class="kpi"><span class="label">Datenmenge</span><span class="value" id="k-bytes">…</span><span class="hint" id="k-bytes-day"></span></div>
-    <div class="kpi"><span class="label">Anfragen</span><span class="value" id="k-req">…</span><span class="hint" id="k-req-avg"></span></div>
-    <div class="kpi"><span class="label">ins Internet</span><span class="value" id="k-inet">…</span><span class="hint" id="k-inet-share"></span></div>
-    <div class="kpi"><span class="label">Besucher-IPs</span><span class="value" id="k-vis">…</span><span class="hint">verschiedene Adressen</span></div>
-  </section>
+  <div id="s-overview">
+    <section class="kpis">
+      <div class="kpi"><span class="label">Datenmenge</span><span class="value" id="k-bytes">…</span><span class="hint" id="k-bytes-day"></span></div>
+      <div class="kpi"><span class="label">Anfragen</span><span class="value" id="k-req">…</span><span class="hint" id="k-req-avg"></span></div>
+      <div class="kpi"><span class="label">ins Internet</span><span class="value" id="k-inet">…</span><span class="hint" id="k-inet-share"></span></div>
+      <div class="kpi"><span class="label">Besucher-IPs</span><span class="value" id="k-vis">…</span><span class="hint">verschiedene Adressen</span></div>
+    </section>
 
-  <section class="card wide">
-    <div class="card-head">
-      <h2 id="chart-title">Datenmenge pro Tag</h2>
-      <div class="legend" id="legend"></div>
-    </div>
-    <div class="chart" id="chart"></div>
-  </section>
+    <section class="card wide">
+      <div class="card-head">
+        <h2 id="chart-title">Datenmenge pro Tag</h2>
+        <div class="legend" id="legend"></div>
+      </div>
+      <div class="chart" id="chart"></div>
+    </section>
+  </div>
 
-  <div class="grid">
+  <div class="grid" id="s-traffic">
     <section class="card"><h2 id="t-group">Domains</h2><div class="bars" id="b-group"></div></section>
     <section class="card"><h2>Bereiche</h2><div class="bars" id="b-areas"></div></section>
     <section class="card"><h2>Wer lädt?</h2><div class="bars" id="b-kinds"></div></section>
@@ -55,13 +73,17 @@
     <section class="card"><h2>LAN oder Internet</h2><div class="bars" id="b-nets"></div></section>
   </div>
 
-  <div class="grid two">
-    <section class="card"><h2>Größte Dateien und Pfade</h2><div class="table-wrap"><table id="t-paths"></table></div></section>
+  <div class="grid two" id="s-geo">
+    <section class="card"><h2>Länder</h2><div class="bars" id="b-countries"></div><p class="note" id="geo-note"></p></section>
     <section class="card"><h2>Größte Besucher</h2><div class="table-wrap"><table id="t-clients"></table></div></section>
   </div>
+
+  <section class="card wide" id="s-paths"><h2>Größte Dateien und Pfade</h2><div class="table-wrap"><table id="t-paths"></table></div></section>
 </main>
 
 <footer id="foot">Lade Daten …</footer>
+</div>
+</div>
 <div class="tip" id="tip" hidden></div>
 <script src="app.js"></script>
 </body>

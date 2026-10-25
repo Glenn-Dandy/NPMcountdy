@@ -10,12 +10,14 @@ import json
 import os
 import re
 import sqlite3
+import struct
 import threading
 import time
+import urllib.request
 from datetime import datetime, timedelta
 from glob import glob
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from ipaddress import ip_address
+from ipaddress import ip_address, ip_network
 from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo
 
@@ -26,6 +28,17 @@ INTERVAL = int(os.environ.get("INTERVAL", "60"))
 DETAIL_DAYS = int(os.environ.get("DETAIL_DAYS", "90"))
 TZ = ZoneInfo(os.environ.get("TZ", "Europe/Berlin"))
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+GEOIP = os.environ.get("GEOIP", "on").lower() not in ("off", "0", "false", "no")
+GEOIP_PATH = os.environ.get("GEOIP_PATH", os.path.join(os.path.dirname(DB_PATH), "dbip-country-lite.mmdb"))
+GEOIP_URL = os.environ.get("GEOIP_URL", "")  # leer: DB-IP Country Lite des aktuellen Monats
+
+# https://www.cloudflare.com/ips/ : steht so eine Adresse im Log, ist die echte Besucher-IP unbekannt
+CLOUDFLARE = [ip_network(n) for n in (
+    "173.245.48.0/20", "103.21.244.0/22", "103.22.200.0/22", "103.31.4.0/22", "141.101.64.0/18",
+    "108.162.192.0/18", "190.93.240.0/20", "188.114.96.0/20", "197.234.240.0/22", "198.41.128.0/17",
+    "162.158.0.0/15", "104.16.0.0/13", "104.24.0.0/14", "172.64.0.0/13", "131.0.72.0/22",
+    "2400:cb00::/32", "2606:4700::/32", "2803:f800::/32", "2405:b500::/32", "2405:8100::/32",
+    "2a06:98c0::/29", "2c0f:f248::/32")]
 
 # [25/Oct/2026:01:53:31 +0000] - 200 200 - GET https host "/pfad" [Client 1.2.3.4] [Length 123] [Gzip -] [Sent-to x] "UA" "Referer"
 LINE_RE = re.compile(
@@ -68,6 +81,9 @@ def db_init():
         CREATE TABLE IF NOT EXISTS daily_clients (
             day TEXT, host TEXT, client TEXT, net TEXT, bytes INTEGER, requests INTEGER,
             PRIMARY KEY (day, host, client));
+        CREATE TABLE IF NOT EXISTS daily_countries (
+            day TEXT, host TEXT, country TEXT, bytes INTEGER, requests INTEGER,
+            PRIMARY KEY (day, host, country));
         CREATE TABLE IF NOT EXISTS files (
             base TEXT PRIMARY KEY, inode INTEGER, offset INTEGER, head TEXT);
         CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
@@ -75,6 +91,174 @@ def db_init():
     )
     con.commit()
     con.close()
+
+
+# ---------- Länder zu IP-Adressen (DB-IP Lite, CC BY 4.0) ----------
+
+class MMDB:
+    """Minimaler Leser für MaxMind-DB-Dateien, reicht für die Länderdatenbank von DB-IP."""
+
+    def __init__(self, buf):
+        self.buf = buf
+        marker = buf.rfind(b"\xab\xcd\xefMaxMind.com")
+        if marker < 0:
+            raise ValueError("keine MMDB-Datei")
+        self.data = 0
+        meta = self.decode(marker + 14)[0]
+        self.nodes, self.rsize = meta["node_count"], meta["record_size"]
+        self.data = self.nodes * self.rsize // 4 + 16
+        self.v6 = meta["ip_version"] == 6
+        self.v4start = 0
+        if self.v6:  # IPv4 liegt im IPv6-Baum hinter 96 Null-Bits
+            for _ in range(96):
+                if self.v4start >= self.nodes:
+                    break
+                self.v4start = self.record(self.v4start, 0)
+
+    def record(self, node, bit):
+        b = self.buf
+        if self.rsize == 24:
+            o = node * 6 + bit * 3
+            return int.from_bytes(b[o:o + 3], "big")
+        if self.rsize == 28:
+            o = node * 7
+            if bit == 0:
+                return ((b[o + 3] & 0xF0) << 20) | int.from_bytes(b[o:o + 3], "big")
+            return ((b[o + 3] & 0x0F) << 24) | int.from_bytes(b[o + 4:o + 7], "big")
+        o = node * 8 + bit * 4
+        return int.from_bytes(b[o:o + 4], "big")
+
+    def decode(self, off):
+        b = self.buf
+        ctrl = b[off]; off += 1
+        typ, size = ctrl >> 5, ctrl & 31
+        if typ == 1:  # Zeiger in den Datenbereich
+            ss, v = (ctrl >> 3) & 3, ctrl & 7
+            n = ss + 1
+            p = int.from_bytes(b[off:off + n], "big")
+            p = p if ss == 3 else (v << (8 * n)) | p
+            p += (0, 2048, 526336, 0)[ss]
+            return self.decode(self.data + p)[0], off + n
+        if typ == 0:
+            typ = 7 + b[off]; off += 1
+        if size >= 29:
+            n = size - 28
+            size = (29, 285, 65821)[n - 1] + int.from_bytes(b[off:off + n], "big")
+            off += n
+        if typ == 2:
+            return b[off:off + size].decode("utf-8", "replace"), off + size
+        if typ == 7:
+            out = {}
+            for _ in range(size):
+                k, off = self.decode(off)
+                out[k], off = self.decode(off)
+            return out, off
+        if typ == 11:
+            out = []
+            for _ in range(size):
+                v, off = self.decode(off)
+                out.append(v)
+            return out, off
+        if typ == 3:
+            return struct.unpack(">d", b[off:off + 8])[0], off + 8
+        if typ == 15:
+            return struct.unpack(">f", b[off:off + 4])[0], off + 4
+        if typ == 14:
+            return bool(size), off
+        v = int.from_bytes(b[off:off + size], "big")
+        if typ == 8 and size == 4 and v >= 1 << 31:
+            v -= 1 << 32
+        return (bytes(b[off:off + size]) if typ == 4 else v), off + size
+
+    def lookup(self, ip):
+        if ip.version == 6 and not self.v6:
+            return None
+        packed = ip.packed
+        node = self.v4start if ip.version == 4 else 0
+        for i in range(len(packed) * 8):
+            if node >= self.nodes:
+                break
+            node = self.record(node, (packed[i >> 3] >> (7 - (i & 7))) & 1)
+        if node <= self.nodes:
+            return None
+        return self.decode(self.data + node - self.nodes - 16)[0]
+
+
+geo = {"db": None, "mtime": None, "tried": 0, "error": None}
+country_cache = {}
+
+
+def geo_download():
+    now = datetime.now(TZ)
+    prev = now.replace(day=1) - timedelta(days=1)
+    urls = [GEOIP_URL] if GEOIP_URL else [
+        f"https://download.db-ip.com/free/dbip-country-lite-{m:%Y-%m}.mmdb.gz" for m in (now, prev)]
+    err = None
+    for url in urls:
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "NPMcountdy"})
+            with urllib.request.urlopen(req, timeout=60) as r:
+                raw = r.read()
+            buf = gzip.decompress(raw) if raw[:2] == b"\x1f\x8b" else raw
+            MMDB(buf)  # erst prüfen, dann die alte Datei ersetzen
+            with open(GEOIP_PATH + ".tmp", "wb") as f:
+                f.write(buf)
+            os.replace(GEOIP_PATH + ".tmp", GEOIP_PATH)
+            return
+        except Exception as e:
+            err = f"{url}: {type(e).__name__}: {e}"
+    raise RuntimeError(err)
+
+
+def geo_refresh():
+    """Lädt die Länderdatenbank, wenn sie fehlt oder älter als 32 Tage ist (DB-IP erneuert sie monatlich)."""
+    if not GEOIP:
+        return
+    try:
+        mtime = os.path.getmtime(GEOIP_PATH)
+    except OSError:
+        mtime = None
+    if (mtime is None or time.time() - mtime > 32 * 86400) and time.time() - geo["tried"] > 3600:
+        geo["tried"] = time.time()
+        try:
+            geo_download()
+            geo["error"] = None
+            mtime = os.path.getmtime(GEOIP_PATH)
+        except Exception as e:  # mit der alten Datei weitermachen, in einer Stunde neu versuchen
+            geo["error"] = str(e)
+    if mtime is not None and mtime != geo["mtime"]:
+        with open(GEOIP_PATH, "rb") as f:
+            db = MMDB(f.read())
+        with state_lock:
+            geo.update(db=db, mtime=mtime)
+            country_cache.clear()
+
+
+def country_of(client):
+    """Ländercode, LAN, CLOUDFLARE (echte IP unbekannt) oder ?? (unbekannt)."""
+    cc = country_cache.get(client)
+    if cc:
+        return cc
+    try:
+        ip = ip_address(client)
+    except ValueError:
+        return "??"
+    if ip.version == 6 and ip.ipv4_mapped:
+        ip = ip.ipv4_mapped
+    if ip.is_private or ip.is_loopback:
+        cc = "LAN"
+    elif any(ip in n for n in CLOUDFLARE):
+        cc = "CLOUDFLARE"
+    else:
+        db = geo["db"]
+        if db is None:
+            return "??"
+        rec = db.lookup(ip) or {}
+        cc = (rec.get("country") or {}).get("iso_code") or rec.get("country_code") or "??"
+    if len(country_cache) > 200000:
+        country_cache.clear()
+    country_cache[client] = cc
+    return cc
 
 
 # ---------- Auswertung einer Logzeile ----------
@@ -127,13 +311,13 @@ def parse_line(line):
         "ts": ts, "day": local.strftime("%Y-%m-%d"), "hod": local.hour,
         "host": m["host"].lower(), "area": area, "path": short,
         "kind": classify(m["ua"]), "status": code[0] + "xx",
-        "net": net_of(client), "client": client, "bytes": int(m["length"]),
+        "net": net_of(client), "client": client, "cc": country_of(client), "bytes": int(m["length"]),
     }
 
 
 class Batch:
     def __init__(self):
-        self.hourly, self.paths, self.clients, self.lines = {}, {}, {}, 0
+        self.hourly, self.paths, self.clients, self.countries, self.lines = {}, {}, {}, {}, 0
 
     def add(self, line):
         r = parse_line(line)
@@ -146,6 +330,8 @@ class Batch:
         v = self.paths.setdefault(k, [0, 0]); v[0] += r["bytes"]; v[1] += 1
         k = (r["day"], r["host"], r["client"], r["net"])
         v = self.clients.setdefault(k, [0, 0]); v[0] += r["bytes"]; v[1] += 1
+        k = (r["day"], r["host"], r["cc"])
+        v = self.countries.setdefault(k, [0, 0]); v[0] += r["bytes"]; v[1] += 1
 
     def flush(self, con):
         con.executemany(
@@ -160,6 +346,10 @@ class Batch:
             "INSERT INTO daily_clients VALUES (?,?,?,?,?,?) ON CONFLICT DO UPDATE SET "
             "bytes = bytes + excluded.bytes, requests = requests + excluded.requests",
             [k + tuple(v) for k, v in self.clients.items()])
+        con.executemany(
+            "INSERT INTO daily_countries VALUES (?,?,?,?,?) ON CONFLICT DO UPDATE SET "
+            "bytes = bytes + excluded.bytes, requests = requests + excluded.requests",
+            [k + tuple(v) for k, v in self.countries.items()])
 
 
 # ---------- Logdateien lesen, auch über Rotationen hinweg ----------
@@ -244,6 +434,10 @@ def ingest():
 def ingest_loop():
     while True:
         try:
+            geo_refresh()
+        except Exception as e:
+            geo["error"] = f"{type(e).__name__}: {e}"
+        try:
             n = ingest()
             with state_lock:
                 status.update(last_ingest=int(time.time()), last_lines=n, last_error=None)
@@ -302,7 +496,7 @@ def summary(q):
     paths = [{"host": r[0], "name": r[1], "bytes": r[2], "requests": r[3]} for r in one(
         f"SELECT host, path, SUM(bytes), SUM(requests) FROM daily_paths WHERE {dwhere} "
         "GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 25", dargs)]
-    clients = [{"name": r[0], "net": r[1], "bytes": r[2], "requests": r[3], "hosts": r[4]} for r in one(
+    clients = [{"name": r[0], "net": r[1], "cc": country_of(r[0]), "bytes": r[2], "requests": r[3], "hosts": r[4]} for r in one(
         f"SELECT client, net, SUM(bytes), SUM(requests), COUNT(DISTINCT host) FROM daily_clients WHERE {dwhere} "
         "GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 25", dargs)]
     visitors = one(f"SELECT COUNT(DISTINCT client) FROM daily_clients WHERE {dwhere}", dargs)[0][0]
@@ -317,6 +511,9 @@ def summary(q):
             "GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 25", args)],
         "statuses": breakdown("status"), "nets": breakdown("net"),
         "hod": hod, "paths": paths, "clients": clients,
+        "countries": [{"name": r[0], "bytes": r[1], "requests": r[2]} for r in one(
+            f"SELECT country, SUM(bytes), SUM(requests) FROM daily_countries WHERE {dwhere} "
+            "GROUP BY 1 ORDER BY 2 DESC LIMIT 100", dargs)],
     }
     con.close()
     return result
@@ -329,7 +526,9 @@ def meta():
     con.close()
     with state_lock:
         s = dict(status)
-    return {"hosts": hosts, "first_day": first, "detail_days": DETAIL_DAYS, **s}
+    geo_info = {"geo": GEOIP, "geo_ready": geo["db"] is not None, "geo_error": geo["error"],
+                "geo_date": datetime.fromtimestamp(geo["mtime"], TZ).strftime("%Y-%m-%d") if geo["mtime"] else None}
+    return {"hosts": hosts, "first_day": first, "detail_days": DETAIL_DAYS, **s, **geo_info}
 
 
 class Handler(BaseHTTPRequestHandler):
