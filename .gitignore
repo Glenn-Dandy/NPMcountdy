@@ -1,0 +1,4 @@
+data/*
+!data/.keep
+__pycache__/
+CLAUDE.md
