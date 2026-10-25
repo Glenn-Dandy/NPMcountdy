@@ -27,7 +27,8 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 h1 { font-size: 19px; margin: 0; letter-spacing: -0.01em; }
-h2 { font-size: 13px; margin: 0 0 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+h3 { font-size: 13px; margin: 0 0 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.page-title { font-size: 22px; margin: 2px 0 16px; letter-spacing: -0.01em; }
 .sub { margin: 0; color: var(--muted); font-size: 12.5px; }
 
 .layout { display: grid; grid-template-columns: 236px minmax(0, 1fr); min-height: 100vh; }
@@ -46,7 +47,7 @@ h2 { font-size: 13px; margin: 0 0 12px; font-weight: 600; color: var(--muted); t
 .range button:hover, .nav a:hover { background: var(--track); }
 .range button.on { background: var(--accent); color: #fff; }
 .nav { display: flex; flex-direction: column; gap: 2px; }
-.nav a.on { color: var(--accent); font-weight: 600; }
+.nav a.on { background: var(--track); color: var(--accent); font-weight: 600; }
 select {
   font: inherit; color: var(--text); background: var(--card); border: 1px solid var(--line);
   border-radius: 8px; padding: 7px 10px; width: 100%;
@@ -54,8 +55,27 @@ select {
 
 .content { min-width: 0; }
 main { max-width: 1280px; padding: 20px 24px 8px; }
-#s-overview, #s-traffic, #s-geo, #s-paths { scroll-margin-top: 16px; }
-.flag { margin-right: 6px; }
+
+.map svg { width: 100%; height: auto; display: block; }
+.map path { fill: var(--track); stroke: var(--card); stroke-width: 0.5; fill-rule: evenodd; cursor: pointer; }
+.map path.has { fill: var(--accent); }
+.map path:hover { stroke: var(--text); stroke-width: 0.8; }
+.map path.sel { stroke: var(--c5); stroke-width: 1.4; }
+.map-legend { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
+.map-legend i { width: 90px; height: 8px; border-radius: 4px; background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 18%, var(--track)), var(--accent)); }
+.geo-grid { align-items: start; }
+.bar-row.sel .n { color: var(--accent); font-weight: 600; }
+.more { display: inline-block; margin-top: 12px; color: var(--accent); font-size: 13px; text-decoration: none; }
+.more:hover { text-decoration: underline; }
+button.link { border: 0; background: none; color: var(--accent); font: inherit; font-size: 12.5px; cursor: pointer; padding: 0; }
+.mini-kpis { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 6px; }
+.mini-kpis div { display: flex; flex-direction: column; background: var(--track); border-radius: 8px; padding: 8px 10px; }
+.mini-kpis b { font-size: 18px; font-variant-numeric: tabular-nums; }
+.mini-kpis .label, .mini-kpis .hint { color: var(--muted); font-size: 12px; }
+.sub-head { margin: 16px 0 8px; color: var(--muted); font-size: 12px; font-weight: 600; }
+.days { display: grid; align-items: end; gap: 2px; height: 70px; }
+.days div { background: var(--c1); border-radius: 2px 2px 0 0; min-height: 1px; opacity: .85; }
+.days div:hover { opacity: 1; }
 .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 14px; }
 .kpi { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: 2px; }
 .kpi .label { color: var(--muted); font-size: 12.5px; }
@@ -65,7 +85,7 @@ main { max-width: 1280px; padding: 20px 24px 8px; }
 .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; min-width: 0; }
 .card.wide { margin-bottom: 14px; }
 .card-head { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: baseline; justify-content: space-between; margin-bottom: 8px; }
-.card-head h2 { margin: 0; }
+.card-head h3 { margin: 0; }
 .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: 14px; }
 .grid.two { grid-template-columns: repeat(2, 1fr); }
 
@@ -126,12 +146,16 @@ footer a { color: inherit; }
   .kpis { grid-template-columns: repeat(2, 1fr); }
 }
 @media (max-width: 860px) {
-  .layout { grid-template-columns: 1fr; }
+  .layout { grid-template-columns: minmax(0, 1fr); }
+  .side { min-width: 0; }
+  #country-card { order: -1; }
   .side {
     position: static; height: auto; overflow: visible; gap: 12px;
     padding: 12px 16px; border-right: 0; border-bottom: 1px solid var(--line);
   }
-  .side-label, .nav { display: none; }
+  .side-label { display: none; }
+  .nav { flex-direction: row; gap: 4px; overflow-x: auto; margin: 0 -16px; padding: 0 16px; }
+  .nav a { width: auto; white-space: nowrap; }
   .range { flex-direction: row; flex-wrap: wrap; gap: 4px; }
   .range button { width: auto; border: 1px solid var(--line); padding: 6px 10px; }
   main { padding: 14px 16px 8px; }

@@ -28,6 +28,7 @@ INTERVAL = int(os.environ.get("INTERVAL", "60"))
 DETAIL_DAYS = int(os.environ.get("DETAIL_DAYS", "90"))
 TZ = ZoneInfo(os.environ.get("TZ", "Europe/Berlin"))
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+PAGES = {"", "verteilung", "laender", "besucher", "dateien"}  # Unterseiten, alle liefern index.html
 GEOIP = os.environ.get("GEOIP", "on").lower() not in ("off", "0", "false", "no")
 GEOIP_PATH = os.environ.get("GEOIP_PATH", os.path.join(os.path.dirname(DB_PATH), "dbip-country-lite.mmdb"))
 GEOIP_URL = os.environ.get("GEOIP_URL", "")  # leer: DB-IP Country Lite des aktuellen Monats
@@ -452,6 +453,7 @@ def ingest_loop():
 def summary(q):
     days = max(1, min(int(q.get("days", ["7"])[0]), 3650))
     host = q.get("host", [""])[0]
+    country = q.get("country", [""])[0].upper()[:10]
     now = datetime.now(TZ)
     start_day = (now - timedelta(days=days - 1)).strftime("%Y-%m-%d")
     hourly_view = days <= 2
@@ -495,10 +497,11 @@ def summary(q):
 
     paths = [{"host": r[0], "name": r[1], "bytes": r[2], "requests": r[3]} for r in one(
         f"SELECT host, path, SUM(bytes), SUM(requests) FROM daily_paths WHERE {dwhere} "
-        "GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 25", dargs)]
-    clients = [{"name": r[0], "net": r[1], "cc": country_of(r[0]), "bytes": r[2], "requests": r[3], "hosts": r[4]} for r in one(
-        f"SELECT client, net, SUM(bytes), SUM(requests), COUNT(DISTINCT host) FROM daily_clients WHERE {dwhere} "
-        "GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 25", dargs)]
+        "GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 50", dargs)]
+    client_sql = (f"SELECT client, net, SUM(bytes), SUM(requests), COUNT(DISTINCT host) FROM daily_clients "
+                  f"WHERE {dwhere} GROUP BY 1, 2 ORDER BY 3 DESC")
+    client_row = lambda r: {"name": r[0], "net": r[1], "cc": country_of(r[0]), "bytes": r[2], "requests": r[3], "hosts": r[4]}
+    clients = [client_row(r) for r in one(client_sql + " LIMIT 50", dargs)]
     visitors = one(f"SELECT COUNT(DISTINCT client) FROM daily_clients WHERE {dwhere}", dargs)[0][0]
     result = {
         "days": days, "host": host, "hourly": hourly_view, "group": group,
@@ -513,8 +516,25 @@ def summary(q):
         "hod": hod, "paths": paths, "clients": clients,
         "countries": [{"name": r[0], "bytes": r[1], "requests": r[2]} for r in one(
             f"SELECT country, SUM(bytes), SUM(requests) FROM daily_countries WHERE {dwhere} "
-            "GROUP BY 1 ORDER BY 2 DESC LIMIT 100", dargs)],
+            "GROUP BY 1 ORDER BY 2 DESC LIMIT 300", dargs)],
     }
+    if country:
+        cargs = dargs + [country]
+        first_day = dargs[0]
+        day_list = []
+        d = datetime.strptime(first_day, "%Y-%m-%d").date()
+        while d <= now.date():
+            day_list.append(d.isoformat()); d += timedelta(days=1)
+        per_day = dict(one(f"SELECT day, SUM(bytes) FROM daily_countries WHERE {dwhere} AND country = ? GROUP BY 1", cargs))
+        matching = [c for c in map(client_row, one(client_sql, dargs)) if c["cc"] == country]
+        result["country"] = {
+            "code": country,
+            "hosts": [{"name": r[0], "bytes": r[1], "requests": r[2]} for r in one(
+                f"SELECT host, SUM(bytes), SUM(requests) FROM daily_countries WHERE {dwhere} AND country = ? "
+                "GROUP BY 1 ORDER BY 2 DESC", cargs)],
+            "days": [{"day": x, "bytes": per_day.get(x, 0)} for x in day_list],
+            "clients": matching[:50], "visitors": len(matching),
+        }
     con.close()
     return result
 
@@ -547,17 +567,18 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         u = urlparse(self.path)
         try:
-            if u.path == "/api/summary":
+            if u.path.endswith("/api/summary"):
                 return self.send(200, json.dumps(summary(parse_qs(u.query))).encode(), "application/json")
-            if u.path == "/api/meta":
+            if u.path.endswith("/api/meta"):
                 return self.send(200, json.dumps(meta()).encode(), "application/json")
         except Exception as e:
             return self.send(500, json.dumps({"error": str(e)}).encode(), "application/json")
-        name = "index.html" if u.path in ("/", "") else os.path.basename(u.path)
+        name = "index.html" if u.path.strip("/") in PAGES else os.path.basename(u.path)
         path = os.path.join(STATIC_DIR, name)
         if not os.path.isfile(path):
             return self.send(404, b"Nicht gefunden", "text/plain; charset=utf-8")
-        ctype = {"html": "text/html", "js": "text/javascript", "css": "text/css", "svg": "image/svg+xml"}.get(
+        ctype = {"html": "text/html", "js": "text/javascript", "css": "text/css", "svg": "image/svg+xml",
+                 "json": "application/json"}.get(
             name.rsplit(".", 1)[-1], "application/octet-stream")
         with open(path, "rb") as f:
             self.send(200, f.read(), ctype + "; charset=utf-8")

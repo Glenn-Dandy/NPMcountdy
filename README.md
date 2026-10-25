@@ -12,6 +12,8 @@ Zeigt, wie viele Daten der Nginx Proxy Manager (NPM) ausgeliefert hat: pro Domai
 - Länder kommen aus der freien Datenbank [DB-IP IP to Country Lite](https://db-ip.com/db/download/ip-to-country-lite)
   (CC BY 4.0). Sie wird beim Start nach `./data` geladen und monatlich erneuert. Die Besucher-IPs
   verlassen dabei den Server nicht, nachgeschlagen wird nur lokal.
+- Die Weltkarte (`app/static/world.json`) stammt aus [Natural Earth](https://www.naturalearthdata.com/)
+  (gemeinfrei) und wird mit `tools/make_world.py` erzeugt, Anleitung im Kopf der Datei.
 - Nur Python-Standardbibliothek, keine Zusatzpakete.
 
 ## Betrieb auf dem NPM (<NPM-IP>)
@@ -21,7 +23,15 @@ cd ~/npmcountdy
 sudo docker compose up -d --build
 ```
 
-Oberfläche: `http://<NPM-IP>:7881`
+Oberfläche: `http://<NPM-IP>:7881` mit den Unterseiten
+
+| Adresse | Inhalt |
+|---|---|
+| `/` | Übersicht: Kennzahlen, Verlauf, Domains, Client-Arten, wichtigste Länder |
+| `/verteilung` | Bereiche, Tageszeit, Antworten, LAN oder Internet |
+| `/laender` | Weltkarte und alle Länder, `/laender?land=DE` zeigt ein Land im Detail |
+| `/besucher` | größte Besucher-IPs mit Land |
+| `/dateien` | größte Dateien und Pfade |
 
 Keine eigene Anmeldung. Nur im LAN betreiben. Als `traffic.example.com` über den NPM:
 

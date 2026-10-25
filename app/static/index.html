@@ -18,6 +18,14 @@
     </div>
   </div>
 
+  <nav class="side-group nav" id="nav" aria-label="Seiten">
+    <a href="./" data-page="overview">Übersicht</a>
+    <a href="verteilung" data-page="traffic">Verteilung</a>
+    <a href="laender" data-page="geo">Länder</a>
+    <a href="besucher" data-page="visitors">Besucher</a>
+    <a href="dateien" data-page="paths">Dateien und Pfade</a>
+  </nav>
+
   <div class="side-group">
     <p class="side-label">Zeitraum</p>
     <div class="range" id="range" role="group" aria-label="Zeitraum">
@@ -35,50 +43,70 @@
       <option value="">Alle Domains</option>
     </select>
   </div>
-
-  <nav class="side-group nav" id="nav" aria-label="Abschnitte">
-    <p class="side-label">Abschnitte</p>
-    <a href="#s-overview">Übersicht</a>
-    <a href="#s-traffic">Verteilung</a>
-    <a href="#s-geo">Länder und Besucher</a>
-    <a href="#s-paths">Dateien und Pfade</a>
-  </nav>
 </aside>
 
 <div class="content">
 <main>
-  <div id="s-overview">
-    <section class="kpis">
+  <section class="page" data-page="overview" data-title="Übersicht">
+    <h2 class="page-title">Übersicht</h2>
+    <div class="kpis">
       <div class="kpi"><span class="label">Datenmenge</span><span class="value" id="k-bytes">…</span><span class="hint" id="k-bytes-day"></span></div>
       <div class="kpi"><span class="label">Anfragen</span><span class="value" id="k-req">…</span><span class="hint" id="k-req-avg"></span></div>
       <div class="kpi"><span class="label">ins Internet</span><span class="value" id="k-inet">…</span><span class="hint" id="k-inet-share"></span></div>
       <div class="kpi"><span class="label">Besucher-IPs</span><span class="value" id="k-vis">…</span><span class="hint">verschiedene Adressen</span></div>
-    </section>
-
+    </div>
     <section class="card wide">
       <div class="card-head">
-        <h2 id="chart-title">Datenmenge pro Tag</h2>
+        <h3 id="chart-title">Datenmenge pro Tag</h3>
         <div class="legend" id="legend"></div>
       </div>
       <div class="chart" id="chart"></div>
     </section>
-  </div>
+    <div class="grid">
+      <section class="card"><h3 id="t-group">Domains</h3><div class="bars" id="b-group"></div></section>
+      <section class="card"><h3>Wer lädt?</h3><div class="bars" id="b-kinds"></div></section>
+      <section class="card"><h3>Länder</h3><div class="bars" id="b-countries-top"></div><a class="more" href="laender" data-link>Alle Länder und Weltkarte</a></section>
+    </div>
+  </section>
 
-  <div class="grid" id="s-traffic">
-    <section class="card"><h2 id="t-group">Domains</h2><div class="bars" id="b-group"></div></section>
-    <section class="card"><h2>Bereiche</h2><div class="bars" id="b-areas"></div></section>
-    <section class="card"><h2>Wer lädt?</h2><div class="bars" id="b-kinds"></div></section>
-    <section class="card"><h2>Tageszeit</h2><div class="hod" id="hod"></div><p class="note">Datenmenge nach Uhrzeit, über den ganzen Zeitraum</p></section>
-    <section class="card"><h2>Antworten</h2><div class="bars" id="b-status"></div></section>
-    <section class="card"><h2>LAN oder Internet</h2><div class="bars" id="b-nets"></div></section>
-  </div>
+  <section class="page" data-page="traffic" data-title="Verteilung" hidden>
+    <h2 class="page-title">Verteilung</h2>
+    <div class="grid two">
+      <section class="card"><h3>Bereiche</h3><div class="bars" id="b-areas"></div></section>
+      <section class="card"><h3>Tageszeit</h3><div class="hod" id="hod"></div><p class="note">Datenmenge nach Uhrzeit, über den ganzen Zeitraum</p></section>
+      <section class="card"><h3>Antworten</h3><div class="bars" id="b-status"></div></section>
+      <section class="card"><h3>LAN oder Internet</h3><div class="bars" id="b-nets"></div></section>
+    </div>
+  </section>
 
-  <div class="grid two" id="s-geo">
-    <section class="card"><h2>Länder</h2><div class="bars" id="b-countries"></div><p class="note" id="geo-note"></p></section>
-    <section class="card"><h2>Größte Besucher</h2><div class="table-wrap"><table id="t-clients"></table></div></section>
-  </div>
+  <section class="page" data-page="geo" data-title="Länder" hidden>
+    <h2 class="page-title">Länder</h2>
+    <section class="card wide">
+      <div class="card-head">
+        <h3>Weltkarte</h3>
+        <div class="map-legend"><span>wenig</span><i></i><span>viel Daten</span></div>
+      </div>
+      <div class="map" id="map"></div>
+      <p class="note" id="geo-note" hidden></p>
+    </section>
+    <div class="grid two geo-grid">
+      <section class="card"><h3>Alle Länder</h3><div class="bars" id="b-countries"></div></section>
+      <section class="card" id="country-card">
+        <div class="card-head"><h3 id="country-title">Land</h3><button class="link" id="country-clear" hidden>Auswahl aufheben</button></div>
+        <div id="country-detail"></div>
+      </section>
+    </div>
+  </section>
 
-  <section class="card wide" id="s-paths"><h2>Größte Dateien und Pfade</h2><div class="table-wrap"><table id="t-paths"></table></div></section>
+  <section class="page" data-page="visitors" data-title="Besucher" hidden>
+    <h2 class="page-title">Besucher</h2>
+    <section class="card wide"><h3>Größte Besucher</h3><div class="table-wrap"><table id="t-clients"></table></div></section>
+  </section>
+
+  <section class="page" data-page="paths" data-title="Dateien und Pfade" hidden>
+    <h2 class="page-title">Dateien und Pfade</h2>
+    <section class="card wide"><h3>Größte Dateien und Pfade</h3><div class="table-wrap"><table id="t-paths"></table></div></section>
+  </section>
 </main>
 
 <footer id="foot">Lade Daten …</footer>

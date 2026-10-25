@@ -8,6 +8,8 @@ const STATUS_NAMES = {
   "5xx": "5xx Serverfehler",
 };
 const SPECIAL_CC = { LAN: "Heimnetz (LAN)", CLOUDFLARE: "Cloudflare, Herkunft unbekannt", "??": "Unbekannt" };
+// Unterseite (letzter Teil der Adresse) zu Seite im HTML
+const ROUTES = { "": "overview", verteilung: "traffic", laender: "geo", besucher: "visitors", dateien: "paths" };
 const nf = new Intl.NumberFormat("de-DE");
 const regionNames = (() => { try { return new Intl.DisplayNames(["de"], { type: "region" }); } catch { return null; } })();
 const $ = (id) => document.getElementById(id);
@@ -16,7 +18,10 @@ const store = {
   get(k, d) { try { return localStorage.getItem(k) ?? d; } catch { return d; } },
   set(k, v) { try { localStorage.setItem(k, v); } catch { /* egal */ } },
 };
-const state = { days: Number(store.get("days", "7")) || 7, host: store.get("host", ""), data: null, meta: null };
+const state = {
+  days: Number(store.get("days", "7")) || 7, host: store.get("host", ""),
+  page: "overview", country: "", data: null, meta: null, world: null,
+};
 
 function color(i) {
   return getComputedStyle(document.documentElement).getPropertyValue(COLORS[Math.min(i, COLORS.length - 1)]).trim();
@@ -45,6 +50,16 @@ async function getJSON(url) {
   return r.json();
 }
 
+function showTip(ev, html) {
+  const tip = $("tip");
+  tip.innerHTML = html;
+  tip.hidden = false;
+  const x = Math.min(ev.clientX + 14, window.innerWidth - tip.offsetWidth - 8);
+  tip.style.left = x + "px";
+  tip.style.top = Math.max(8, ev.clientY - tip.offsetHeight - 12) + "px";
+}
+const hideTip = () => ($("tip").hidden = true);
+
 // ---------- Balkendiagramm über die Zeit ----------
 
 function niceMax(v) {
@@ -59,13 +74,15 @@ function niceMax(v) {
 
 function dayLabel(l, hourly) {
   if (hourly) return l;
-  const [y, m, d] = l.split("-");
+  const [, m, d] = l.split("-");
   return `${Number(d)}.${Number(m)}.`;
 }
+const longDay = (day) => new Date(day + "T12:00").toLocaleDateString("de-DE", { weekday: "short", day: "numeric", month: "long" });
 
 function renderChart(d) {
   const el = $("chart");
-  const W = el.clientWidth || 800, H = el.clientHeight || 260;
+  if (!el.clientWidth) return;  // Seite gerade nicht sichtbar
+  const W = el.clientWidth, H = el.clientHeight || 260;
   const pad = { l: 58, r: 6, t: 8, b: 24 };
   const n = d.labels.length;
   let series = d.series.slice(0, 7);
@@ -108,21 +125,51 @@ function renderChart(d) {
 
   $("legend").innerHTML = series.map((s, i) => `<span><i style="background:${color(i)}"></i>${esc(s.name)}</span>`).join("");
 
-  const tip = $("tip");
   el.querySelectorAll("g.col").forEach((g) => {
     g.addEventListener("mousemove", (ev) => {
       const i = Number(g.dataset.i);
       const rows = series.map((s, si) => [s.name, s.values[i], si]).filter((r) => r[1] > 0).sort((a, b) => b[1] - a[1]);
-      const title = d.hourly ? d.labels[i] + " Uhr" : new Date(d.labels[i] + "T12:00").toLocaleDateString("de-DE", { weekday: "short", day: "numeric", month: "long" });
-      tip.innerHTML = `<b>${title}: ${fmtBytes(sums[i])}</b>` + (rows.length
+      const title = d.hourly ? d.labels[i] + " Uhr" : longDay(d.labels[i]);
+      showTip(ev, `<b>${title}: ${fmtBytes(sums[i])}</b>` + (rows.length
         ? rows.map((r) => `<div class="row"><span><i style="background:${color(r[2])}"></i>${esc(r[0])}</span><span>${fmtBytes(r[1])}</span></div>`).join("")
-        : "<div>kein Verkehr</div>");
-      tip.hidden = false;
-      const x = Math.min(ev.clientX + 14, window.innerWidth - tip.offsetWidth - 8);
-      tip.style.left = x + "px";
-      tip.style.top = Math.max(8, ev.clientY - tip.offsetHeight - 12) + "px";
+        : "<div>kein Verkehr</div>"));
     });
-    g.addEventListener("mouseleave", () => (tip.hidden = true));
+    g.addEventListener("mouseleave", hideTip);
+  });
+}
+
+// ---------- Weltkarte ----------
+
+function renderMap(d) {
+  const el = $("map");
+  const w = state.world;
+  if (!w) { el.innerHTML = '<div class="empty">Karte wird geladen …</div>'; return; }
+  const by = Object.fromEntries(d.countries.map((c) => [c.name, c]));
+  const vals = d.countries.filter((c) => w.shapes[c.name] && c.bytes > 0).map((c) => c.bytes);
+  const lo = Math.min(...vals), hi = Math.max(...vals);
+  // logarithmisch, sonst ist neben dem größten Land alles fast weiß
+  const level = (b) => (hi > lo ? 0.18 + 0.82 * Math.log(b / lo) / Math.log(hi / lo) : 1);
+  let svg = `<svg viewBox="0 0 ${w.width} ${w.height}" role="img" aria-label="Weltkarte, Datenmenge nach Land">`;
+  for (const [cc, path] of Object.entries(w.shapes)) {
+    const c = by[cc];
+    const style = c && c.bytes > 0 ? ` style="fill-opacity:${level(c.bytes).toFixed(2)}"` : "";
+    svg += `<path d="${path}" data-cc="${cc}" class="${c && c.bytes > 0 ? "has" : ""}${cc === state.country ? " sel" : ""}"${style}/>`;
+  }
+  el.innerHTML = svg + "</svg>";
+  // ausgewähltes Land nach oben, damit der Rand nicht verdeckt wird
+  el.querySelector("path.sel")?.parentNode.appendChild(el.querySelector("path.sel"));
+
+  const total = d.countries.reduce((a, c) => a + c.bytes, 0);
+  el.querySelectorAll("path").forEach((p) => {
+    p.addEventListener("mousemove", (ev) => {
+      const c = by[p.dataset.cc];
+      showTip(ev, `<b>${esc(countryLabel(p.dataset.cc))}</b>` + (c
+        ? `<div class="row"><span>Daten</span><span>${fmtBytes(c.bytes)} · ${pct(c.bytes, total)}</span></div>`
+          + `<div class="row"><span>Anfragen</span><span>${nf.format(c.requests)}</span></div>`
+        : "<div>kein Verkehr</div>"));
+    });
+    p.addEventListener("mouseleave", hideTip);
+    p.addEventListener("click", () => { hideTip(); setCountry(p.dataset.cc); });
   });
 }
 
@@ -131,11 +178,12 @@ function renderChart(d) {
 function renderBars(id, rows, opts = {}) {
   const el = $(id);
   if (!rows.length) { el.innerHTML = '<div class="empty">Keine Daten im Zeitraum</div>'; return; }
-  const total = rows.reduce((a, r) => a + r.bytes, 0);
+  const total = opts.total ?? rows.reduce((a, r) => a + r.bytes, 0);
   const top = rows[0].bytes || 1;
   el.innerHTML = rows.slice(0, opts.limit || 8).map((r, i) => {
     const name = opts.label ? opts.label(r.name) : opts.names?.[r.name] || r.name;
-    return `<div class="bar-row${opts.click ? " click" : ""}" data-name="${esc(r.name)}" title="${nf.format(r.requests)} Anfragen">
+    const sel = opts.selected && opts.selected === r.name ? " sel" : "";
+    return `<div class="bar-row${opts.click ? " click" : ""}${sel}" data-name="${esc(r.name)}" title="${nf.format(r.requests)} Anfragen">
       <span class="n">${esc(name)}${opts.sub && r.sub ? `<small>${esc(r.sub)}</small>` : ""}</span>
       <span class="v">${r.bytes ? fmtBytes(r.bytes) + " · " + pct(r.bytes, total) : nf.format(r.requests) + " Anfragen, keine Daten"}</span>
       <div class="track"><div class="fill" style="width:${(r.bytes / top) * 100}%;background:${color(opts.mono ? 0 : i)}"></div></div>
@@ -156,10 +204,58 @@ function renderHod(hod) {
   axis.innerHTML = "<span>0 Uhr</span><span>6</span><span>12</span><span>18</span><span>23</span>";
 }
 
-function renderTable(id, head, rows) {
-  const el = $(id);
+function renderTable(el, head, rows) {
+  if (typeof el === "string") el = $(el);
   if (!rows.length) { el.innerHTML = '<tr><td class="empty">Keine Daten im Zeitraum</td></tr>'; return; }
   el.innerHTML = "<thead><tr>" + head.map((h, i) => `<th${i ? ' class="num"' : ""}>${h}</th>`).join("") + "</tr></thead><tbody>" + rows.join("") + "</tbody>";
+}
+
+const clientRow = (c, withCountry = true) =>
+  `<tr><td>${esc(c.name)}<span class="badge">${esc(c.net)}</span>${withCountry ? `<span class="host">${esc(countryLabel(c.cc))}</span>` : ""}</td>`
+  + `<td class="num">${fmtBytes(c.bytes)}</td><td class="num">${nf.format(c.requests)}</td></tr>`;
+
+function renderGeoNote(d) {
+  const m = state.meta || {};
+  const total = d.countries.reduce((a, c) => a + c.bytes, 0);
+  const cf = d.countries.find((c) => c.name === "CLOUDFLARE");
+  let note = "";
+  if (m.geo === false) note = "Länderzuordnung ist ausgeschaltet (GEOIP=off).";
+  else if (!m.geo_ready) note = m.geo_error ? "Länderdatenbank konnte nicht geladen werden: " + m.geo_error : "Länderdatenbank wird geladen …";
+  else if (cf && total && cf.bytes / total > 0.2) note = `${pct(cf.bytes, total)} der Daten gingen an Cloudflare-Adressen. `
+    + "Dort steht nicht die echte Besucher-IP im Log des NPM, Abhilfe siehe README.";
+  $("geo-note").textContent = note;
+  $("geo-note").hidden = !note;
+}
+
+function renderCountry(d) {
+  const el = $("country-detail");
+  const c = d.country;
+  $("country-clear").hidden = !state.country;
+  if (!state.country || !c) {
+    $("country-title").textContent = "Land";
+    el.innerHTML = '<div class="empty">Ein Land auf der Karte oder in der Liste anklicken.</div>';
+    return;
+  }
+  $("country-title").textContent = countryLabel(c.code);
+  const total = d.countries.reduce((a, x) => a + x.bytes, 0);
+  const sum = c.hosts.reduce((a, h) => a + h.bytes, 0);
+  const req = c.hosts.reduce((a, h) => a + h.requests, 0);
+  const maxDay = Math.max(1, ...c.days.map((x) => x.bytes));
+  el.innerHTML = `
+    <div class="mini-kpis">
+      <div><span class="label">Daten</span><b>${fmtBytes(sum)}</b><span class="hint">${pct(sum, total)} aller Länder</span></div>
+      <div><span class="label">Anfragen</span><b>${nf.format(req)}</b></div>
+      <div><span class="label">Besucher-IPs</span><b>${nf.format(c.visitors)}</b></div>
+    </div>
+    <p class="sub-head">Datenmenge pro Tag</p>
+    <div class="days" style="grid-template-columns:repeat(${c.days.length},1fr)">${c.days.map((x) =>
+      `<div style="height:${(x.bytes / maxDay) * 100}%" title="${longDay(x.day)}: ${fmtBytes(x.bytes)}"></div>`).join("")}</div>
+    <p class="sub-head">Domains</p>
+    <div class="bars" id="c-hosts"></div>
+    <p class="sub-head">Größte Besucher aus diesem Land</p>
+    <div class="table-wrap"><table id="c-clients"></table></div>`;
+  renderBars("c-hosts", c.hosts, { mono: true, limit: 10 });
+  renderTable("c-clients", ["Adresse", "Daten", "Anfragen"], c.clients.slice(0, 15).map((x) => clientRow(x, false)));
 }
 
 function render(d) {
@@ -182,31 +278,54 @@ function render(d) {
     $("t-group").textContent = "Domains";
     renderBars("b-group", d.hosts, { click: (h) => setHost(h) });
   }
-  renderBars("b-areas", d.areas, { limit: 10, mono: true, sub: !d.host });
   renderBars("b-kinds", d.kinds);
+  renderBars("b-countries-top", d.countries, { limit: 6, mono: true, label: countryLabel, click: (cc) => go("laender", cc) });
+
+  renderBars("b-areas", d.areas, { limit: 15, mono: true, sub: !d.host });
   renderBars("b-status", d.statuses, { names: STATUS_NAMES });
   renderBars("b-nets", d.nets);
   renderHod(d.hod);
-  renderBars("b-countries", d.countries, { limit: 15, mono: true, label: countryLabel });
-  renderGeoNote(d);
 
+  renderMap(d);
+  renderBars("b-countries", d.countries, { limit: 300, mono: true, label: countryLabel, click: setCountry, selected: state.country });
+  renderGeoNote(d);
+  renderCountry(d);
+
+  renderTable("t-clients", ["Adresse", "Daten", "Anfragen"], d.clients.map((c) => clientRow(c)));
   renderTable("t-paths", ["Pfad", "Daten", "Anfragen"], d.paths.map((p) =>
     `<tr><td class="path">${esc(p.name)}${d.host ? "" : `<span class="host">${esc(p.host)}</span>`}</td><td class="num">${fmtBytes(p.bytes)}</td><td class="num">${nf.format(p.requests)}</td></tr>`));
-  renderTable("t-clients", ["Adresse", "Daten", "Anfragen"], d.clients.map((c) =>
-    `<tr><td>${esc(c.name)}<span class="badge">${esc(c.net)}</span><span class="host">${esc(countryLabel(c.cc))}</span></td><td class="num">${fmtBytes(c.bytes)}</td><td class="num">${nf.format(c.requests)}</td></tr>`));
 }
 
-function renderGeoNote(d) {
-  const m = state.meta || {};
-  const total = d.countries.reduce((a, c) => a + c.bytes, 0);
-  const cf = d.countries.find((c) => c.name === "CLOUDFLARE");
-  let note = "";
-  if (m.geo === false) note = "Länderzuordnung ist ausgeschaltet (GEOIP=off).";
-  else if (!m.geo_ready) note = m.geo_error ? "Länderdatenbank konnte nicht geladen werden: " + m.geo_error : "Länderdatenbank wird geladen …";
-  else if (cf && total && cf.bytes / total > 0.2) note = `${pct(cf.bytes, total)} der Daten gingen an Cloudflare-Adressen. `
-    + "Dort steht nicht die echte Besucher-IP im Log des NPM, Abhilfe siehe README.";
-  $("geo-note").textContent = note;
-  $("geo-note").hidden = !note;
+// ---------- Unterseiten ----------
+
+function readRoute() {
+  const seg = location.pathname.replace(/\/+$/, "").split("/").pop();
+  state.page = ROUTES[seg] || "overview";
+  state.country = state.page === "geo" ? (new URLSearchParams(location.search).get("land") || "").toUpperCase() : "";
+}
+
+function showPage() {
+  document.querySelectorAll(".page").forEach((p) => (p.hidden = p.dataset.page !== state.page));
+  document.querySelectorAll("#nav a").forEach((a) => a.classList.toggle("on", a.dataset.page === state.page));
+  const title = document.querySelector(`.page[data-page="${state.page}"]`).dataset.title;
+  document.title = state.page === "overview" ? "NPMcountdy" : `${title} · NPMcountdy`;
+  hideTip();
+}
+
+// Seite wechseln, ohne neu zu laden; das Land steht als ?land=DE in der Adresse
+function go(seg, country = "") {
+  const url = (seg || "./") + (country ? "?land=" + encodeURIComponent(country) : "");
+  history.pushState(null, "", url);
+  const before = state.country;
+  readRoute();
+  showPage();
+  window.scrollTo(0, 0);
+  if (state.country !== before) load();
+  else if (state.data) render(state.data);
+}
+
+function setCountry(cc) {
+  go("laender", cc === state.country ? "" : cc);
 }
 
 // ---------- Steuerung ----------
@@ -234,13 +353,15 @@ async function loadMeta() {
   if (m.geo_date) parts.push("Länderdatenbank vom " + new Date(m.geo_date + "T12:00").toLocaleDateString("de-DE"));
   $("foot").innerHTML = esc(parts.join(" · "))
     + (m.geo ? ' · <a href="https://db-ip.com" target="_blank" rel="noopener">IP Geolocation by DB-IP</a>' : "")
+    + " · Karte: Natural Earth"
     + (m.last_error ? `<br><span class="err">Fehler beim Einlesen: ${esc(m.last_error)}</span>` : "");
 }
 
 async function load() {
   document.querySelectorAll("#range button").forEach((b) => b.classList.toggle("on", Number(b.dataset.days) === state.days));
   try {
-    const d = await getJSON(`api/summary?days=${state.days}&host=${encodeURIComponent(state.host)}`);
+    const q = `days=${state.days}&host=${encodeURIComponent(state.host)}&country=${encodeURIComponent(state.country)}`;
+    const d = await getJSON("api/summary?" + q);
     state.data = d;
     render(d);
   } catch (e) {
@@ -254,18 +375,25 @@ document.querySelectorAll("#range button").forEach((b) => b.addEventListener("cl
   load();
 }));
 $("host").addEventListener("change", (e) => setHost(e.target.value));
+$("country-clear").addEventListener("click", () => setCountry(state.country));
+document.querySelectorAll("#nav a, a[data-link]").forEach((a) => a.addEventListener("click", (e) => {
+  if (e.ctrlKey || e.metaKey || e.shiftKey || e.button) return;  // neuer Tab soll weiter gehen
+  e.preventDefault();
+  go(a.getAttribute("href").replace("./", ""));
+}));
+window.addEventListener("popstate", () => {
+  const before = state.country;
+  readRoute();
+  showPage();
+  if (state.country !== before) load();
+  else if (state.data) render(state.data);
+});
 let rt;
 window.addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(() => state.data && renderChart(state.data), 120); });
 window.matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", () => state.data && render(state.data));
 
-// Menüpunkt des sichtbaren Abschnitts hervorheben
-const navLinks = [...document.querySelectorAll("#nav a")];
-if ("IntersectionObserver" in window) {
-  const io = new IntersectionObserver((entries) => entries.forEach((e) => {
-    if (e.isIntersecting) navLinks.forEach((a) => a.classList.toggle("on", a.getAttribute("href") === "#" + e.target.id));
-  }), { rootMargin: "-25% 0px -65% 0px" });
-  navLinks.forEach((a) => { const t = document.querySelector(a.getAttribute("href")); if (t) io.observe(t); });
-}
-
+readRoute();
+showPage();
+getJSON("world.json").then((w) => { state.world = w; if (state.data) renderMap(state.data); }).catch(() => {});
 loadMeta().catch(() => {}).finally(load);
 setInterval(() => { loadMeta().catch(() => {}); load(); }, 60000);
