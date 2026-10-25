@@ -1,10 +1,10 @@
 services:
   # Liest die Access-Logs des NPM nur mit (read-only) und schreibt die Zahlen in ./data.
   # Keine eigene Anmeldung: nur im LAN betreiben, z. B. hinter einem NPM-Host mit Access List.
-  countdy:
+  npmcountdy:
     build: .
-    image: countdy:local
-    container_name: countdy
+    image: npmcountdy:local
+    container_name: npmcountdy
     restart: unless-stopped
     ports:
       - "7881:7881"

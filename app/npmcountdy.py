@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Countdy: liest die Access-Logs des Nginx Proxy Manager mit und zeigt,
+"""NPMcountdy: liest die Access-Logs des Nginx Proxy Manager mit und zeigt,
 wie viele Daten an welche Domain, welchen Bereich und welche Besucher gingen.
 
 Nur Standardbibliothek, damit das Image ohne pip auskommt.
@@ -20,7 +20,7 @@ from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo
 
 LOG_DIR = os.environ.get("LOG_DIR", "/logs")
-DB_PATH = os.environ.get("DB_PATH", "/data/countdy.db")
+DB_PATH = os.environ.get("DB_PATH", "/data/npmcountdy.db")
 PORT = int(os.environ.get("PORT", "7881"))
 INTERVAL = int(os.environ.get("INTERVAL", "60"))
 DETAIL_DAYS = int(os.environ.get("DETAIL_DAYS", "90"))

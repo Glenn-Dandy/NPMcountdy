@@ -1,11 +1,11 @@
-# Countdy
+# NPMcountdy
 
 Zeigt, wie viele Daten der Nginx Proxy Manager (NPM) ausgeliefert hat: pro Domain, pro Bereich
 (z. B. `/mapdata/` bei BoatSpeedy), pro Datei, pro Besucher, nach Tageszeit und nach Client-Art
 (Browser, BoatSpeedy-App, Nextcloud-Clients, Bots).
 
 - Liest `/opt/data/logs/proxy-host-*_access.log` des NPM nur mit (read-only), jede Minute.
-- Speichert die Zahlen in `./data/countdy.db` (SQLite). Die Stundenwerte bleiben dauerhaft,
+- Speichert die Zahlen in `./data/npmcountdy.db` (SQLite). Die Stundenwerte bleiben dauerhaft,
   auch wenn der NPM seine Logs löscht. Dateien und Besucher-IPs werden nach `DETAIL_DAYS` (90) Tagen gelöscht.
 - Beim ersten Start werden auch die schon rotierten Logs (`.1`, `.2.gz` …) eingelesen.
 - Gezählt wird `[Length …]` aus dem NPM-Log, also nur, was ausgeliefert wurde. Uploads fehlen.
@@ -14,7 +14,7 @@ Zeigt, wie viele Daten der Nginx Proxy Manager (NPM) ausgeliefert hat: pro Domai
 ## Betrieb auf dem NPM (<NPM-IP>)
 
 ```bash
-cd ~/countdy
+cd ~/npmcountdy
 sudo docker compose up -d --build
 ```
 
@@ -25,7 +25,7 @@ Keine eigene Anmeldung. Nur im LAN betreiben. Als `traffic.example.com` über de
 1. NPM Proxy Host auf `<NPM-IP>:7881`, Access List nur LAN
 2. Pi-hole Local DNS `traffic.example.com` auf `<NPM-IP>`
 3. Firewall, weil der NPM-Container die eigene LAN-Adresse anruft:
-   `sudo ufw allow from 172.16.0.0/12 to any port 7881 proto tcp comment 'Countdy fuer NPM-Proxy'`
+   `sudo ufw allow from 172.16.0.0/12 to any port 7881 proto tcp comment 'NPMcountdy fuer NPM-Proxy'`
 
 ## Einstellungen (docker-compose.yml)
 
