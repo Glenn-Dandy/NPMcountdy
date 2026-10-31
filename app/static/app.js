@@ -8,6 +8,7 @@ const PATHS = {
   geo: { en: "countries", de: "laender" },
   visitors: { en: "visitors", de: "besucher" },
   paths: { en: "files", de: "dateien" },
+  settings: { en: "settings", de: "einstellungen" },
   about: { en: "about", de: "ueber" },
 };
 const ROUTES = Object.fromEntries(Object.entries(PATHS).flatMap(([page, p]) => [[p.en, page], [p.de, page]]));
@@ -19,12 +20,14 @@ const store = {
   get(k, d) { try { return localStorage.getItem(k) ?? d; } catch { return d; } },
   set(k, v) { try { localStorage.setItem(k, v); } catch { /* not important */ } },
 };
+// language of browser and system: German if it is set to German, otherwise English
 const browserLang = () => ((navigator.languages || [navigator.language]).find((l) => /^(en|de)/i.test(l)) || "en").slice(0, 2).toLowerCase();
+const langPref = I18N[store.get("lang", "")] ? store.get("lang", "") : "auto";  // "auto", "en" or "de"
 const state = {
   days: Number(store.get("days", "7")) || 7, host: store.get("host", ""),
   bots: store.get("bots", "1") !== "0",  // bots are counted unless switched off
   step: "",  // chart columns chosen by hand, empty: automatic
-  lang: I18N[store.get("lang", "")] ? store.get("lang", "") : browserLang(),
+  langPref, lang: langPref === "auto" ? browserLang() : langPref,
   page: "overview", country: "", data: null, meta: null, world: null,
 };
 let nf, regionNames;
@@ -121,16 +124,22 @@ function applyLang() {
   document.querySelectorAll("[data-i18n]").forEach((el) => (el.textContent = t(el.dataset.i18n)));
   document.querySelectorAll("[data-i18n-aria]").forEach((el) => el.setAttribute("aria-label", t(el.dataset.i18nAria)));
   document.querySelectorAll("[data-i18n-tip]").forEach((el) => (el.dataset.tip = t(el.dataset.i18nTip)));
-  document.querySelectorAll("#nav a, a[data-link]").forEach((a) => a.setAttribute("href", PATHS[a.dataset.page][state.lang] || "./"));
-  document.querySelectorAll("#lang button").forEach((b) => b.classList.toggle("on", b.dataset.lang === state.lang));
+  document.querySelectorAll(".nav a, a[data-link]").forEach((a) => a.setAttribute("href", PATHS[a.dataset.page][state.lang] || "./"));
+  document.querySelectorAll("#lang button").forEach((b) => {
+    const on = b.dataset.lang === state.langPref;
+    b.classList.toggle("on", on);
+    b.setAttribute("aria-checked", on);
+  });
+  $("lang-auto").textContent = t("lang_auto", { l: I18N[browserLang()] === I18N.de ? "Deutsch" : "English" });
   const opt = $("host").querySelector('option[value=""]');
   if (opt) opt.textContent = t("all_domains");
   if (!$("clear-box").hidden) setClearAsk();
 }
 
-function setLang(lang) {
-  state.lang = lang;
-  store.set("lang", lang);
+function setLang(pref) {
+  state.langPref = pref;
+  state.lang = pref === "auto" ? browserLang() : pref;
+  store.set("lang", pref);
   applyLang();
   // keep the address in the chosen language
   history.replaceState(null, "", pageUrl(state.page, state.country));
@@ -587,7 +596,7 @@ function render(d) {
   ], d.paths, { key: (r) => r.host + r.name, sort: "bytes", placeholder: "search_paths", search: (r) => r.name + " " + r.host });
 }
 
-// notes about data that is only recorded since the update to 0.1.0
+// notes about data that is only recorded since the update to 0.0.3
 function renderNotes(d) {
   const since = state.meta?.detail_since;
   const old = since && d.start_day < since;
@@ -679,7 +688,7 @@ function pageUrl(page, country = "") {
 
 function showPage() {
   document.querySelectorAll(".page").forEach((p) => (p.hidden = p.dataset.page !== state.page));
-  document.querySelectorAll("#nav a").forEach((a) => a.classList.toggle("on", a.dataset.page === state.page));
+  document.querySelectorAll(".nav a").forEach((a) => a.classList.toggle("on", a.dataset.page === state.page));
   document.title = state.page === "overview" ? "NPMcountdy" : `${t("page_" + state.page)} · NPMcountdy`;
   hideTip();
 }
@@ -816,6 +825,8 @@ $("bots").addEventListener("change", (e) => {
   load();
 });
 document.querySelectorAll("#lang button").forEach((b) => b.addEventListener("click", () => setLang(b.dataset.lang)));
+// system language changed while the page is open
+window.addEventListener("languagechange", () => state.langPref === "auto" && setLang("auto"));
 $("host").addEventListener("change", (e) => setHost(e.target.value));
 $("clear-open").addEventListener("click", () => {
   setClearAsk();

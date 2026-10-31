@@ -18,13 +18,25 @@
     </div>
   </div>
 
+  <div class="side-group">
+    <p class="side-label" data-i18n="domain">Domain</p>
+    <select id="host" data-i18n-aria="domain" aria-label="Domain">
+      <option value="">All domains</option>
+    </select>
+    <button class="link danger" id="clear-open" data-i18n="clear_open" hidden>Delete data for this domain</button>
+    <div class="clear-box" id="clear-box" hidden>
+      <p id="clear-ask"></p>
+      <div class="clear-actions"><button class="danger-btn" id="clear-yes" data-i18n="clear_yes">Delete</button><button id="clear-no" data-i18n="clear_no">Cancel</button></div>
+    </div>
+    <p class="clear-msg" id="clear-msg" hidden></p>
+  </div>
+
   <nav class="side-group nav" id="nav" data-i18n-aria="nav_label" aria-label="Pages">
     <a href="./" data-page="overview" data-i18n="page_overview">Overview</a>
     <a href="traffic" data-page="traffic" data-i18n="page_traffic">Breakdown</a>
     <a href="countries" data-page="geo" data-i18n="page_geo">Countries</a>
     <a href="visitors" data-page="visitors" data-i18n="page_visitors">Visitors</a>
     <a href="files" data-page="paths" data-i18n="page_paths">Files and paths</a>
-    <a href="about" data-page="about" data-i18n="page_about">About</a>
   </nav>
 
   <div class="side-group">
@@ -39,31 +51,15 @@
   </div>
 
   <div class="side-group">
-    <p class="side-label" data-i18n="domain">Domain</p>
-    <select id="host" data-i18n-aria="domain" aria-label="Domain">
-      <option value="">All domains</option>
-    </select>
-    <button class="link danger" id="clear-open" data-i18n="clear_open" hidden>Delete data for this domain</button>
-    <div class="clear-box" id="clear-box" hidden>
-      <p id="clear-ask"></p>
-      <div class="clear-actions"><button class="danger-btn" id="clear-yes" data-i18n="clear_yes">Delete</button><button id="clear-no" data-i18n="clear_no">Cancel</button></div>
-    </div>
-    <p class="clear-msg" id="clear-msg" hidden></p>
-  </div>
-
-  <div class="side-group">
     <p class="side-label" data-i18n="filter">Filter</p>
     <label class="switch"><input type="checkbox" id="bots" checked><span class="knob" aria-hidden="true"></span><span data-i18n="bots_label">Include bots and scanners</span></label>
     <p class="side-note" id="bots-note" hidden></p>
   </div>
 
-  <div class="side-group">
-    <p class="side-label" data-i18n="language">Language</p>
-    <div class="lang" id="lang" role="group" data-i18n-aria="language" aria-label="Language">
-      <button data-lang="en" lang="en">English</button>
-      <button data-lang="de" lang="de">Deutsch</button>
-    </div>
-  </div>
+  <nav class="side-group nav side-bottom" data-i18n-aria="nav_more" aria-label="More">
+    <a href="settings" data-page="settings" data-i18n="page_settings">Settings</a>
+    <a href="about" data-page="about" data-i18n="page_about">About</a>
+  </nav>
 </aside>
 
 <div class="content">
@@ -147,6 +143,21 @@
   <section class="page" data-page="paths" hidden>
     <h2 class="page-title" data-i18n="page_paths">Files and paths</h2>
     <section class="card wide"><h3 data-i18n="top_paths">Largest files and paths</h3><div id="t-paths"></div></section>
+  </section>
+
+  <section class="page" data-page="settings" hidden>
+    <h2 class="page-title" data-i18n="page_settings">Settings</h2>
+    <div class="grid two">
+      <section class="card">
+        <h3 data-i18n="language">Language</h3>
+        <div class="choice" id="lang" role="radiogroup" data-i18n-aria="language" aria-label="Language">
+          <button role="radio" data-lang="auto"><b id="lang-auto">Automatic</b><span data-i18n="lang_auto_hint"></span></button>
+          <button role="radio" data-lang="de" lang="de"><b>Deutsch</b><span>de-DE</span></button>
+          <button role="radio" data-lang="en" lang="en"><b>English</b><span>en-GB</span></button>
+        </div>
+        <p class="note" data-i18n="lang_note"></p>
+      </section>
+    </div>
   </section>
 
   <section class="page" data-page="about" hidden>

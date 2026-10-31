@@ -49,13 +49,18 @@ h3 { font-size: 13px; margin: 0 0 12px; font-weight: 600; color: var(--muted); t
 .range button.on { background: var(--accent); color: #fff; }
 .nav { display: flex; flex-direction: column; gap: 2px; }
 .nav a.on { background: var(--track); color: var(--accent); font-weight: 600; }
-.lang { display: flex; gap: 4px; }
-.lang button {
-  flex: 1; border: 1px solid var(--line); border-radius: 7px; background: transparent;
-  color: var(--text); padding: 6px 10px; font: inherit; cursor: pointer;
+.side-bottom { margin-top: auto; padding-top: 12px; border-top: 1px solid var(--line); }
+.choice { display: flex; flex-direction: column; gap: 6px; }
+.choice button {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 12px; text-align: left;
+  border: 1px solid var(--line); border-radius: 8px; background: transparent; color: var(--text);
+  padding: 9px 12px; font: inherit; cursor: pointer;
 }
-.lang button:hover { background: var(--track); }
-.lang button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.choice button span { color: var(--muted); font-size: 12px; }
+.choice button b { font-weight: 500; }
+.choice button:hover { background: var(--track); }
+.choice button.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.choice button.on b { color: var(--accent); font-weight: 600; }
 select {
   font: inherit; color: var(--text); background: var(--card); border: 1px solid var(--line);
   border-radius: 8px; padding: 7px 10px; width: 100%;
@@ -265,7 +270,7 @@ footer a[data-page]:hover { text-decoration: underline; }
   .nav a { width: auto; white-space: nowrap; }
   .range { flex-direction: row; flex-wrap: wrap; gap: 4px; }
   .range button { width: auto; border: 1px solid var(--line); padding: 6px 10px; }
-  .lang button { flex: 0 0 auto; }
+  .side-bottom { margin-top: 0; padding-top: 0; border-top: 0; }
   .side-note { padding: 0; }
   main { padding: 14px 16px 8px; }
   footer { padding: 4px 16px 24px; }

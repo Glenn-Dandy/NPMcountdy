@@ -2,7 +2,7 @@
 
 [English](README.md) · **Deutsch**
 
-Version 0.1.0
+Version 0.0.3
 
 Zeigt, wie viele Daten der Nginx Proxy Manager (NPM) ausgeliefert hat: pro Domain, pro Bereich
 (z. B. `/mapdata/` bei BoatSpeedy), pro Datei, pro Besucher, nach Tageszeit und nach Client-Art
@@ -25,8 +25,8 @@ Zeigt, wie viele Daten der Nginx Proxy Manager (NPM) ausgeliefert hat: pro Domai
   Besucher-IPs noch gespeichert sind (`DETAIL_DAYS`).
 - Die Weltkarte (`app/static/world.json`) stammt aus [Natural Earth](https://www.naturalearthdata.com/)
   (gemeinfrei) und wird mit `tools/make_world.py` erzeugt, Anleitung im Kopf der Datei.
-- Oberfläche auf Englisch und Deutsch. Sie richtet sich nach der Browsersprache, umschalten
-  geht unten im Menü links, die Wahl merkt sich der Browser.
+- Oberfläche auf Englisch und Deutsch. Sie richtet sich automatisch nach der Sprache von Browser
+  und System, unter Einstellungen (unten im Menü) lässt sie sich fest wählen.
 - Kennzahlen mit Vergleich zum gleich langen Zeitraum davor, Spitzenlast ins Internet in Mbit/s
   (Stundenmittel), Jahresansicht nach Wochen oder Monaten.
 - Schalter „Bots und Scanner mitzählen“ im Menü (Standard: an). Ausgeschaltet fehlen sie in allen Zahlen.
@@ -54,9 +54,10 @@ Oberfläche: `http://<NPM-IP>:7881` mit den Unterseiten
 | `/laender` | Weltkarte und alle Länder, `/laender?land=DE` zeigt ein Land im Detail |
 | `/besucher` | Anbieter und Besucher-IPs mit Land, Anbieter und Details |
 | `/dateien` | größte Dateien und Pfade |
-| `/ueber` | Version, Status, Quellen und Lizenzen |
+| `/einstellungen` | Sprache |
+| `/ueber` | Version, Update, Feedback, Status, Quellen und Lizenzen |
 
-Die englischen Adressen (`/traffic`, `/countries?country=DE`, `/visitors`, `/files`, `/about`) gehen genauso.
+Die englischen Adressen (`/traffic`, `/countries?country=DE`, `/visitors`, `/files`, `/settings`, `/about`) gehen genauso.
 
 Keine eigene Anmeldung. Nur im LAN betreiben. Als `traffic.example.com` über den NPM:
 
@@ -88,9 +89,9 @@ git pull
 sudo docker compose up -d --build
 ```
 
-## Update von 0.0.x
+## Update von 0.0.2 oder älter
 
-Beim ersten Start von 0.1.0 bekommen die Tabellen für Dateien, Besucher und Länder eine Spalte für
+Beim ersten Start von 0.0.3 bekommen die Tabellen für Dateien, Besucher und Länder eine Spalte für
 die Client-Art. Ältere Zeilen haben keine, deshalb wirkt der Bot-Schalter dort erst für Daten ab dem
 Update, und fehlerhafte Anfragen werden erst ab dann erfasst. Die Oberfläche weist darauf hin.
 Der Verlauf (Stundenwerte) kannte die Client-Art schon immer.

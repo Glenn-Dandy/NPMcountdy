@@ -2,7 +2,7 @@
 
 **English** · [Deutsch](README.de.md)
 
-Version 0.1.0
+Version 0.0.3
 
 Shows how much data Nginx Proxy Manager (NPM) has served: per domain, per area
 (e.g. `/mapdata/` of BoatSpeedy), per file, per visitor, by time of day, by client type
@@ -25,8 +25,8 @@ Shows how much data Nginx Proxy Manager (NPM) has served: per domain, per area
   visitor IPs are still stored (`DETAIL_DAYS`).
 - The world map (`app/static/world.json`) is based on [Natural Earth](https://www.naturalearthdata.com/)
   (public domain) and built with `tools/make_world.py`, see the header of that file.
-- The UI is available in English and German. It follows the browser language, the switch is at
-  the bottom of the menu on the left, and the browser remembers the choice.
+- The UI is available in English and German. It follows the language of browser and system
+  automatically, under Settings (bottom of the menu) it can be fixed.
 - Key figures compared with the previous period of the same length, peak load to the internet in Mbit/s
   (hourly average), year view by weeks or months.
 - Switch "Include bots and scanners" in the menu (default: on). Switched off, they are left out of all figures.
@@ -54,9 +54,10 @@ UI: `http://<NPM-IP>:7881` with these pages
 | `/countries` | World map and all countries, `/countries?country=DE` shows one country in detail |
 | `/visitors` | Providers and visitor IPs with country, provider and details |
 | `/files` | Largest files and paths |
-| `/about` | Version, status, sources and licences |
+| `/settings` | Language |
+| `/about` | Version, update, feedback, status, sources and licences |
 
-The German addresses (`/verteilung`, `/laender?land=DE`, `/besucher`, `/dateien`, `/ueber`) work as well.
+The German addresses (`/verteilung`, `/laender?land=DE`, `/besucher`, `/dateien`, `/einstellungen`, `/ueber`) work as well.
 
 There is no login. Only run it in your LAN. To reach it as `traffic.example.com` through NPM:
 
@@ -88,9 +89,9 @@ git pull
 sudo docker compose up -d --build
 ```
 
-## Updating from 0.0.x
+## Updating from 0.0.2 or older
 
-On the first start of 0.1.0 the tables for files, visitors and countries get a column for the client
+On the first start of 0.0.3 the tables for files, visitors and countries get a column for the client
 type. Older rows have none, so the bot switch only applies to data from the update on there, and failed
 requests are recorded from then on. The UI points this out. The history (hourly figures) always had the client type.
 

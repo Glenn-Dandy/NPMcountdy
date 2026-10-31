@@ -21,7 +21,7 @@ from ipaddress import ip_address, ip_network
 from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo
 
-VERSION = "0.1.0"
+VERSION = "0.0.3"
 REPO = "https://github.com/Glenn-Dandy/NPMcountdy"
 LOG_DIR = os.environ.get("LOG_DIR", "/logs")
 DB_PATH = os.environ.get("DB_PATH", "/data/npmcountdy.db")
@@ -30,8 +30,8 @@ INTERVAL = int(os.environ.get("INTERVAL", "60"))
 DETAIL_DAYS = int(os.environ.get("DETAIL_DAYS", "90"))
 TZ = ZoneInfo(os.environ.get("TZ", "Europe/Berlin"))
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
-PAGES = {"", "traffic", "countries", "visitors", "files", "about",  # sub pages, all serve index.html
-         "verteilung", "laender", "besucher", "dateien", "ueber"}   # German addresses
+PAGES = {"", "traffic", "countries", "visitors", "files", "settings", "about",  # sub pages, all serve index.html
+         "verteilung", "laender", "besucher", "dateien", "einstellungen", "ueber"}   # German addresses
 LIMIT = 500  # rows per table (visitors, files, errors) sent to the UI
 
 
@@ -72,7 +72,7 @@ state_lock = threading.Lock()
 db_lock = threading.Lock()  # never ingest and delete at the same time, or deleted rows come back
 status = {"last_ingest": None, "last_lines": 0, "last_error": None}
 
-# Tables kept for DETAIL_DAYS. Version 0.0.x had no client type in them, see db_init().
+# Tables kept for DETAIL_DAYS. Up to version 0.0.2 they had no client type in them, see db_init().
 DETAIL_TABLES = {
     "daily_paths": ("day TEXT, host TEXT, path TEXT, kind TEXT, bytes INTEGER, requests INTEGER, "
                     "PRIMARY KEY (day, host, path, kind)", "day, host, path, '', bytes, requests"),
@@ -114,7 +114,7 @@ def db_init():
         if not have:
             con.execute(f"CREATE TABLE {table} ({cols})")
         elif "kind" not in have:
-            # database of version 0.0.x: add the client type, old rows get an empty one.
+            # database of version 0.0.2 or older: add the client type, old rows get an empty one.
             # detail_since tells the UI from when on bots and errors are known in these tables.
             con.execute(f"ALTER TABLE {table} RENAME TO {table}_old")
             con.execute(f"CREATE TABLE {table} ({cols})")
