@@ -2,7 +2,7 @@
 
 **English** · [Deutsch](README.de.md)
 
-Version 0.1.2
+Version 0.1.3
 
 Shows how much data Nginx Proxy Manager (NPM) has served: per domain, per area
 (e.g. `/mapdata/` of BoatSpeedy), per file, per visitor, by time of day, by client type
@@ -27,6 +27,9 @@ Shows how much data Nginx Proxy Manager (NPM) has served: per domain, per area
   (public domain) and built with `tools/make_world.py`, see the header of that file.
 - The UI is available in English and German. It follows the language of browser and system
   automatically, under Settings (bottom of the menu) it can be fixed.
+- Domains of one proxy host (e.g. `example.com` and `www.example.com`) are combined and shown under the
+  shortest name. NPMcountdy sees this from NPM's shared log file. They are still stored separately,
+  combining can be switched off under Settings.
 - Key figures compared with the previous period of the same length, peak load to the internet in Mbit/s
   (hourly average), year view by weeks or months.
 - Switch "Include bots and scanners" in the menu (default: on). Switched off, they are left out of all figures.
@@ -54,7 +57,7 @@ UI: `http://<NPM-IP>:7881` with these pages
 | `/countries` | World map and all countries, `/countries?country=DE` shows one country in detail |
 | `/visitors` | Providers and visitor IPs with country, provider and details |
 | `/files` | Largest files and paths |
-| `/settings` | Language |
+| `/settings` | Language, combining domains |
 | `/about` | Version, update, feedback, status, sources and licences |
 
 The German addresses (`/verteilung`, `/laender?land=DE`, `/besucher`, `/dateien`, `/einstellungen`, `/ueber`) work as well.

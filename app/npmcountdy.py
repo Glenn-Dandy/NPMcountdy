@@ -21,7 +21,7 @@ from ipaddress import ip_address, ip_network
 from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo
 
-VERSION = "0.1.2"
+VERSION = "0.1.3"
 REPO = "https://github.com/Glenn-Dandy/NPMcountdy"
 LOG_DIR = os.environ.get("LOG_DIR", "/logs")
 DB_PATH = os.environ.get("DB_PATH", "/data/npmcountdy.db")
@@ -87,7 +87,58 @@ def db_connect():
     con = sqlite3.connect(DB_PATH, timeout=30)
     con.execute("PRAGMA journal_mode=WAL")
     con.execute("PRAGMA synchronous=NORMAL")
+    con.create_function("site", 1, site_of, deterministic=True)
     return con
+
+
+# ---------- Domains of one NPM proxy host ----------
+# NPM writes one log file per proxy host. Domains found in the same file (example.com and
+# www.example.com) belong together; the UI can show them as one, under the shortest name.
+# The stored figures keep the real domain, grouping only happens when querying.
+
+SITES = {}    # domain -> main domain of its proxy host
+MEMBERS = {}  # main domain -> all domains of the proxy host
+
+
+def site_of(host):
+    return SITES.get(host, host)
+
+
+def main_domain(hosts):
+    return sorted(hosts, key=lambda h: (h.startswith("www."), len(h), h))[0]
+
+
+def load_sites(con):
+    groups = {}
+    for host, base in con.execute("SELECT host, base FROM file_hosts"):
+        groups.setdefault(base, []).append(host)
+    sites, members = {}, {}
+    for hosts in groups.values():
+        main = main_domain(hosts)
+        members[main] = sorted(hosts, key=lambda h: (h != main, h))
+        for h in hosts:
+            sites[h] = main
+    with state_lock:
+        SITES.clear(); SITES.update(sites)
+        MEMBERS.clear(); MEMBERS.update(members)
+
+
+HOST_RE = re.compile(r' - [A-Z]+ \S+ (\S+) "')
+
+
+def scan_hosts(base):
+    """Domains in a log file and its rotated copies, for databases from before file_hosts existed."""
+    found = set()
+    for path in [base] + rotated_of(base):
+        try:
+            with open_any(path) as f:
+                for raw in f:
+                    m = HOST_RE.search(raw.decode("utf-8", "replace"))
+                    if m:
+                        found.add(m.group(1).lower())
+        except OSError:
+            pass
+    return found
 
 
 def db_init():
@@ -106,6 +157,7 @@ def db_init():
         CREATE TABLE IF NOT EXISTS files (
             base TEXT PRIMARY KEY, inode INTEGER, offset INTEGER, head TEXT);
         CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
+        CREATE TABLE IF NOT EXISTS file_hosts (host TEXT PRIMARY KEY, base TEXT, seen INTEGER);
         """
     )
     today = datetime.now(TZ).strftime("%Y-%m-%d")
@@ -122,6 +174,7 @@ def db_init():
             con.execute(f"DROP TABLE {table}_old")
             con.execute("INSERT OR IGNORE INTO meta VALUES ('detail_since', ?)", (today,))
     con.commit()
+    load_sites(con)
     con.close()
 
 
@@ -427,6 +480,7 @@ def upsert(con, table, rows, cols="bytes, requests"):
 class Batch:
     def __init__(self):
         self.hourly, self.paths, self.clients, self.countries, self.errors, self.lines = {}, {}, {}, {}, {}, 0
+        self.base, self.hosts = None, {}  # log file being read, domain -> its log file
 
     def add(self, line):
         r = parse_line(line)
@@ -434,6 +488,7 @@ class Batch:
             return
         self.lines += 1
         day, host, kind, size = r["day"], r["host"], r["kind"], r["bytes"]
+        self.hosts[host] = self.base
         bump(self.hourly, (r["ts"], day, r["hod"], host, r["area"], kind, r["status"], r["net"]), size)
         bump(self.paths, (day, host, r["path"], kind), size)
         bump(self.clients, (day, host, r["client"], r["net"], kind), size)
@@ -449,6 +504,9 @@ class Batch:
                 upsert(con, table, [k + tuple(v) for k, v in rows.items()])
         if self.errors:
             upsert(con, "daily_errors", [k + (v,) for k, v in self.errors.items()], "requests")
+        now = int(time.time())
+        con.executemany("INSERT OR REPLACE INTO file_hosts VALUES (?,?,?)",
+                        [(h, b, now) for h, b in self.hosts.items() if b])
 
 
 # ---------- Reading log files, across rotations ----------
@@ -496,7 +554,14 @@ def ingest():
     batch = Batch()
     first_run = con.execute("SELECT value FROM meta WHERE key='backfilled'").fetchone() is None
     known = {r[0]: r[1:] for r in con.execute("SELECT base, inode, offset, head FROM files")}
-    for base in sorted(glob(os.path.join(LOG_DIR, "proxy-host-*_access.log"))):
+    bases = sorted(glob(os.path.join(LOG_DIR, "proxy-host-*_access.log")))
+    if not first_run and not con.execute("SELECT 1 FROM file_hosts LIMIT 1").fetchone():
+        # database of version 0.1.2 or older: find out once which domains share a proxy host
+        now = int(time.time())
+        con.executemany("INSERT OR REPLACE INTO file_hosts VALUES (?,?,?)",
+                        [(h, base, now) for base in bases for h in scan_hosts(base)])
+    for base in bases:
+        batch.base = base
         try:
             st = os.stat(base)
         except OSError:
@@ -526,6 +591,7 @@ def ingest():
     for table in ("daily_paths", "daily_clients", "daily_errors"):
         con.execute(f"DELETE FROM {table} WHERE day < ?", (cutoff,))
     con.commit()
+    load_sites(con)
     con.close()
     return batch.lines
 
@@ -611,6 +677,8 @@ class Period:
         self.days = max(1, min(int(q.get("days", ["7"])[0]), 3650))
         self.host = q.get("host", [""])[0]
         self.bots = q.get("bots", ["1"])[0] != "0"
+        self.group = q.get("group", ["1"])[0] != "0"  # domains of one proxy host as one
+        self.hcol = "site(host)" if self.group else "host"
         self.now = now = datetime.now(TZ)
         self.hourly = self.days <= 2
         self.hours = 48 if self.days == 2 else 24
@@ -634,7 +702,7 @@ class Period:
         self.dwhere, self.dargs = "day >= ?", [self.detail_day]
         extra, extra_args = "", []
         if self.host:
-            extra, extra_args = " AND host = ?", [self.host]
+            extra, extra_args = f" AND {self.hcol} = ?", [self.host]
         if not self.bots:
             extra += f" AND kind != '{BOT}'"
         self.where += extra; self.args += extra_args
@@ -675,7 +743,7 @@ def summary(q):
     if p.hourly or step not in ("week", "month"):
         step = "day"
     where, args, dwhere, dargs = p.where, p.args, p.dwhere, p.dargs
-    group = "area" if p.host else "host"
+    group, hcol = ("area" if p.host else p.hcol), p.hcol
 
     con = db_connect()
     one = lambda sql, a: con.execute(sql, a).fetchall()
@@ -722,13 +790,13 @@ def summary(q):
         hod[h] = v
 
     paths = [{"host": r[0], "name": r[1], "bytes": r[2], "requests": r[3]} for r in one(
-        f"SELECT host, path, SUM(bytes), SUM(requests) FROM daily_paths WHERE {dwhere} "
+        f"SELECT {hcol}, path, SUM(bytes), SUM(requests) FROM daily_paths WHERE {dwhere} "
         f"GROUP BY 1, 2 ORDER BY 3 DESC LIMIT {LIMIT}", dargs)]
     errors = [{"host": r[0], "name": r[1], "status": r[2], "requests": r[3]} for r in one(
-        f"SELECT host, path, status, SUM(requests) FROM daily_errors WHERE {dwhere} "
+        f"SELECT {hcol}, path, status, SUM(requests) FROM daily_errors WHERE {dwhere} "
         f"GROUP BY 1, 2, 3 ORDER BY 4 DESC LIMIT {LIMIT}", dargs)]
     clients = [client_row(r) for r in one(
-        "SELECT client, net, SUM(bytes), SUM(requests), COUNT(DISTINCT host), GROUP_CONCAT(DISTINCT kind) "
+        f"SELECT client, net, SUM(bytes), SUM(requests), COUNT(DISTINCT {hcol}), GROUP_CONCAT(DISTINCT kind) "
         f"FROM daily_clients WHERE {dwhere} GROUP BY 1, 2 ORDER BY 3 DESC", dargs)]
 
     providers = []
@@ -748,9 +816,9 @@ def summary(q):
         "labels": labels, "ranges": ranges,
         "weeks": [date.fromisoformat(k).isocalendar()[1] for k in labels] if step == "week" and not p.hourly else None,
         "series": [{"name": g, "values": v} for g, v in sorted(series.items(), key=lambda x: -sum(x[1]))],
-        "hosts": breakdown("host"), "kinds": breakdown("kind"),
+        "hosts": breakdown(hcol), "kinds": breakdown("kind"),
         "areas": [{"name": r[1], "sub": r[0], "bytes": r[2], "requests": r[3]} for r in one(
-            f"SELECT host, area, SUM(bytes), SUM(requests) FROM hourly WHERE {where} "
+            f"SELECT {hcol}, area, SUM(bytes), SUM(requests) FROM hourly WHERE {where} "
             "GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 25", args)],
         "statuses": breakdown("status"), "nets": breakdown("net"),
         "hod": hod, "paths": paths, "errors": errors, "clients": clients[:LIMIT], "providers": providers,
@@ -769,7 +837,7 @@ def summary(q):
         result["country"] = {
             "code": country,
             "hosts": [{"name": r[0], "bytes": r[1], "requests": r[2]} for r in one(
-                f"SELECT host, SUM(bytes), SUM(requests) FROM daily_countries WHERE {dwhere} AND country = ? "
+                f"SELECT {hcol}, SUM(bytes), SUM(requests) FROM daily_countries WHERE {dwhere} AND country = ? "
                 "GROUP BY 1 ORDER BY 2 DESC", cargs)],
             "days": [{"day": x, "bytes": per_day.get(x, 0)} for x in day_list],
             "clients": matching[:50], "visitors": len(matching),
@@ -783,7 +851,7 @@ def client_detail(q):
     p = Period(q)
     ip = q.get("ip", [""])[0].strip()[:64]
     con = db_connect()
-    rows = con.execute(f"SELECT day, host, kind, SUM(bytes), SUM(requests) FROM daily_clients "
+    rows = con.execute(f"SELECT day, {p.hcol}, kind, SUM(bytes), SUM(requests) FROM daily_clients "
                        f"WHERE client = ? AND {p.dwhere} GROUP BY 1, 2, 3", [ip] + p.dargs).fetchall()
     con.close()
     hosts, kinds, per_day = {}, {}, {}
@@ -805,14 +873,16 @@ def client_detail(q):
     }
 
 
-def clear_host(host):
-    """Deletes all stored figures of a domain. The NPM log files stay untouched."""
+def clear_host(host, group=True):
+    """Deletes all stored figures of a domain (grouped: all domains of its proxy host).
+    The NPM log files stay untouched."""
+    col = "site(host)" if group else "host"
     with db_lock:
         con = db_connect()
-        b, r = con.execute("SELECT COALESCE(SUM(bytes),0), COALESCE(SUM(requests),0) FROM hourly WHERE host = ?",
+        b, r = con.execute(f"SELECT COALESCE(SUM(bytes),0), COALESCE(SUM(requests),0) FROM hourly WHERE {col} = ?",
                            (host,)).fetchone()
         for table in ("hourly", "daily_paths", "daily_clients", "daily_countries", "daily_errors"):
-            con.execute(f"DELETE FROM {table} WHERE host = ?", (host,))
+            con.execute(f"DELETE FROM {table} WHERE {col} = ?", (host,))
         con.commit()
         con.close()
     return {"host": host, "bytes": b, "requests": r}
@@ -827,7 +897,13 @@ def meta():
     size = sum(os.path.getsize(DB_PATH + x) for x in ("", "-wal") if os.path.exists(DB_PATH + x))
     with state_lock:
         s = dict(status)
-    out = {"version": VERSION, "repo": REPO, "hosts": hosts, "first_day": first, "detail_days": DETAIL_DAYS,
+    with state_lock:
+        sites = []
+        for h in hosts:  # proxy hosts, ordered like their largest domain
+            main = SITES.get(h, h)
+            if main not in (x["name"] for x in sites):
+                sites.append({"name": main, "members": MEMBERS.get(main, [main])})
+    out = {"version": VERSION, "repo": REPO, "hosts": hosts, "sites": sites, "first_day": first, "detail_days": DETAIL_DAYS,
            "detail_since": since[0] if since else None, "clear": CLEAR, "interval": INTERVAL, "db_size": size,
            "update": update_info(), **s}
     for name, prefix in (("country", "geo"), ("asn", "asn")):
@@ -882,12 +958,13 @@ class Handler(BaseHTTPRequestHandler):
         try:
             body = json.loads(self.rfile.read(min(int(self.headers.get("Content-Length") or 0), 4096)) or b"{}")
             host = str(body.get("host", "")).strip().lower()
+            group = body.get("group", True) is not False
         except (ValueError, AttributeError):
             return err(400, "Invalid request")
         if not host:
             return err(400, "No domain given")
         try:
-            return self.send(200, json.dumps(clear_host(host)).encode(), "application/json")
+            return self.send(200, json.dumps(clear_host(host, group)).encode(), "application/json")
         except Exception as e:
             return err(500, str(e))
 

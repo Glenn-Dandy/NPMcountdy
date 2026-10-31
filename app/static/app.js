@@ -26,6 +26,7 @@ const langPref = I18N[store.get("lang", "")] ? store.get("lang", "") : "auto";  
 const state = {
   days: Number(store.get("days", "7")) || 7, host: store.get("host", ""),
   bots: store.get("bots", "1") !== "0",  // bots are counted unless switched off
+  group: store.get("group", "1") !== "0",  // domains of one NPM proxy host shown as one
   step: "",  // chart columns chosen by hand, empty: automatic
   langPref, lang: langPref === "auto" ? browserLang() : langPref,
   page: "overview", country: "", data: null, meta: null, world: null,
@@ -72,6 +73,15 @@ function providerName(p) {
   return t("special_cc")[p.net === "LAN" || p.cc === "LAN" ? "LAN" : "??"];
 }
 const statusLabel = (code) => code + (t("codes")[code] ? " " + t("codes")[code] : "");
+
+// ---------- Domains of one proxy host ----------
+// With state.group the server reports each proxy host under its main domain; members lists all its domains.
+
+const siteOf = (host) => (state.group && state.meta?.sites.find((s) => s.members.includes(host))?.name) || host;
+const membersOf = (name) => (state.group && state.meta?.sites.find((s) => s.name === name)?.members) || [name];
+const otherMembers = (name) => membersOf(name).filter((h) => h !== name).join(", ");
+const withMembers = (name) => (otherMembers(name) ? t("with_members", { host: name, others: otherMembers(name) }) : name);
+const filterParams = () => `host=${encodeURIComponent(state.host)}&bots=${state.bots ? 1 : 0}&group=${state.group ? 1 : 0}`;
 
 async function getJSON(url) {
   const r = await fetch(url);
@@ -292,6 +302,9 @@ function barsHtml(rows, opts = {}) {
   }).join("");
 }
 
+// the other domains of a proxy host, shown small next to its name
+const memberSub = (r) => ({ ...r, sub: otherMembers(r.name) });
+
 function renderBars(id, rows, opts = {}) {
   const el = $(id);
   el.innerHTML = barsHtml(rows, opts);
@@ -428,7 +441,7 @@ function visitorCols() {
 }
 
 async function visitorDetail(ip) {
-  const q = `ip=${encodeURIComponent(ip)}&days=${state.days}&host=${encodeURIComponent(state.host)}&bots=${state.bots ? 1 : 0}`;
+  const q = `ip=${encodeURIComponent(ip)}&days=${state.days}&${filterParams()}`;
   const c = await getJSON("api/client?" + q);
   const prov = c.asn ? `${providerName(c)} (AS${c.asn})` : providerName(c);
   const facts = [
@@ -439,7 +452,7 @@ async function visitorDetail(ip) {
   ];
   return `<div class="visitor">
     <dl class="facts compact">${facts.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("")}</dl>
-    <div><p class="sub-head">${t("d_domains")}</p><div class="bars">${barsHtml(c.hosts, { mono: true, limit: 10 })}</div></div>
+    <div><p class="sub-head">${t("d_domains")}</p><div class="bars">${barsHtml(c.hosts.map(memberSub), { mono: true, limit: 10, sub: true })}</div></div>
     <div><p class="sub-head">${t("d_days")}</p>${daysHtml(c.days)}</div>
   </div>`;
 }
@@ -494,7 +507,7 @@ function renderCountry(d) {
     <p class="sub-head">${t("country_days")}</p>
     ${daysHtml(c.days)}
     <p class="sub-head">${t("domains")}</p>
-    <div class="bars">${barsHtml(c.hosts, { mono: true, limit: 10 })}</div>
+    <div class="bars">${barsHtml(c.hosts.map(memberSub), { mono: true, limit: 10, sub: true })}</div>
     <p class="sub-head">${t("country_clients")}</p>
     <div class="table-wrap"><table id="c-clients"></table></div>`;
   renderSimpleTable("c-clients", ["col_address", "col_data", "col_requests"], c.clients.slice(0, 15).map(clientRow));
@@ -543,12 +556,13 @@ function render(d) {
   document.querySelectorAll("#step button").forEach((b) => b.classList.toggle("on", b.dataset.step === d.step));
   renderChart(d);
 
+  const hosts = d.hosts.map(memberSub);
   if (d.host) {
     $("t-group").textContent = t("domain");
-    renderBars("b-group", d.hosts, { mono: true });
+    renderBars("b-group", hosts, { mono: true, sub: true });
   } else {
     $("t-group").textContent = t("domains");
-    renderBars("b-group", d.hosts, { click: (h) => setHost(h) });
+    renderBars("b-group", hosts, { click: (h) => setHost(h), sub: true });
   }
   renderBars("b-kinds", d.kinds, { label: (r) => kindName(r.name) });
   renderBars("b-countries-top", d.countries, { limit: 6, mono: true, label: (r) => countryLabel(r.name), click: (cc) => go("geo", cc) });
@@ -729,7 +743,7 @@ function updateClear() {
 
 function setClearAsk() {
   const [before, after = ""] = t("clear_ask", { host: "\u0001" }).split("\u0001");
-  $("clear-ask").innerHTML = esc(before) + `<b>${esc(state.host)}</b>` + esc(after);
+  $("clear-ask").innerHTML = esc(before) + `<b>${esc(withMembers(state.host))}</b>` + esc(after);
 }
 
 function showClearMsg(text, err = false) {
@@ -745,13 +759,13 @@ async function clearHost() {
     const r = await fetch("api/clear", {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-NPMcountdy": "clear" },
-      body: JSON.stringify({ host }),
+      body: JSON.stringify({ host, group: state.group }),
     });
     const res = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(res.error || "HTTP " + r.status);
     $("clear-box").hidden = true;
     setHost("");
-    showClearMsg(t("clear_done", { host, bytes: fmtBytes(res.bytes), requests: nf.format(res.requests) }));
+    showClearMsg(t("clear_done", { host: withMembers(host), bytes: fmtBytes(res.bytes), requests: nf.format(res.requests) }));
     loadMeta().catch(() => {});
   } catch (e) {
     showClearMsg(t("clear_failed", { error: e.message }), true);
@@ -779,16 +793,39 @@ function renderFoot(m) {
 function renderMeta(m) {
   renderFoot(m);
   renderAbout(m);
+  renderSites(m);
+}
+
+function renderHostSelect() {
+  const m = state.meta;
+  if (!m) return;
+  const names = state.group ? m.sites.map((s) => s.name) : m.hosts;
+  const sel = $("host");
+  const cur = state.host;
+  sel.innerHTML = `<option value="">${esc(t("all_domains"))}</option>` + names.map((h) => {
+    const n = membersOf(h).length - 1;
+    return `<option value="${esc(h)}" title="${esc(membersOf(h).join(", "))}">${esc(h)}${n ? ` (+${n})` : ""}</option>`;
+  }).join("");
+  if (cur && !names.includes(cur)) sel.insertAdjacentHTML("beforeend", `<option>${esc(cur)}</option>`);
+  sel.value = cur;
+}
+
+// settings page: which proxy hosts have more than one domain
+function renderSites(m) {
+  const multi = m.sites.filter((s) => s.members.length > 1);
+  $("site-list").innerHTML = multi.length
+    ? multi.map((s) => `<li><b>${esc(s.name)}</b>: ${esc(s.members.join(", "))}</li>`).join("")
+    : `<li class="empty">${esc(t("group_none"))}</li>`;
 }
 
 async function loadMeta() {
   const m = await getJSON("api/meta");
   state.meta = m;
-  const sel = $("host");
-  const cur = state.host;
-  sel.innerHTML = `<option value="">${esc(t("all_domains"))}</option>` + m.hosts.map((h) => `<option>${esc(h)}</option>`).join("");
-  if (cur && !m.hosts.includes(cur)) sel.insertAdjacentHTML("beforeend", `<option>${esc(cur)}</option>`);
-  sel.value = cur;
+  if (state.group && state.host && siteOf(state.host) !== state.host) {
+    state.host = siteOf(state.host);  // a www. domain chosen before grouping was switched on
+    store.set("host", state.host);
+  }
+  renderHostSelect();
   updateClear();
   renderMeta(m);
 }
@@ -796,9 +833,9 @@ async function loadMeta() {
 async function load() {
   document.querySelectorAll("#range button").forEach((b) => b.classList.toggle("on", Number(b.dataset.days) === state.days));
   $("bots").checked = state.bots;
+  $("group").checked = state.group;
   try {
-    const q = `days=${state.days}&host=${encodeURIComponent(state.host)}&country=${encodeURIComponent(state.country)}`
-      + `&bots=${state.bots ? 1 : 0}&step=${chartStep()}`;
+    const q = `days=${state.days}&country=${encodeURIComponent(state.country)}&${filterParams()}&step=${chartStep()}`;
     const d = await getJSON("api/summary?" + q);
     state.data = d;
     render(d);
@@ -821,6 +858,15 @@ document.querySelectorAll("#step button").forEach((b) => b.addEventListener("cli
 $("bots").addEventListener("change", (e) => {
   state.bots = e.target.checked;
   store.set("bots", state.bots ? "1" : "0");
+  closeDetails();
+  load();
+});
+$("group").addEventListener("change", (e) => {
+  state.group = e.target.checked;
+  store.set("group", state.group ? "1" : "0");
+  if (state.group && state.host) { state.host = siteOf(state.host); store.set("host", state.host); }
+  renderHostSelect();
+  updateClear();
   closeDetails();
   load();
 });

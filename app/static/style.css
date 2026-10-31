@@ -188,6 +188,9 @@ footer a { color: inherit; }
 .switch input:checked + .knob::after { transform: translateX(14px); }
 .switch input:focus-visible + .knob { outline: 2px solid var(--accent); outline-offset: 2px; }
 .side-note { margin: 6px 0 0; padding: 0 10px; color: var(--muted); font-size: 12px; }
+.switch.setting { padding: 2px 0; }
+.site-list { margin: 8px 0 0; padding-left: 18px; font-size: 13px; display: flex; flex-direction: column; gap: 4px; }
+.site-list .empty { list-style: none; margin-left: -18px; padding: 0; }
 
 .note.top { margin: -6px 0 12px; }
 .bars.cols { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px 28px; }
