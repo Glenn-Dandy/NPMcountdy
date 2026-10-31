@@ -8,8 +8,11 @@ const PATHS = {
   geo: { en: "countries", de: "laender" },
   visitors: { en: "visitors", de: "besucher" },
   paths: { en: "files", de: "dateien" },
+  about: { en: "about", de: "ueber" },
 };
 const ROUTES = Object.fromEntries(Object.entries(PATHS).flatMap(([page, p]) => [[p.en, page], [p.de, page]]));
+const BOT = "Bot/Scanner";
+const PAGE_ROWS = 50;  // table rows shown at first and added per click
 const $ = (id) => document.getElementById(id);
 
 const store = {
@@ -19,6 +22,8 @@ const store = {
 const browserLang = () => ((navigator.languages || [navigator.language]).find((l) => /^(en|de)/i.test(l)) || "en").slice(0, 2).toLowerCase();
 const state = {
   days: Number(store.get("days", "7")) || 7, host: store.get("host", ""),
+  bots: store.get("bots", "1") !== "0",  // bots are counted unless switched off
+  step: "",  // chart columns chosen by hand, empty: automatic
   lang: I18N[store.get("lang", "")] ? store.get("lang", "") : browserLang(),
   page: "overview", country: "", data: null, meta: null, world: null,
 };
@@ -33,13 +38,14 @@ function color(i) {
   return getComputedStyle(document.documentElement).getPropertyValue(COLORS[Math.min(i, COLORS.length - 1)]).trim();
 }
 
-function fmtBytes(b) {
-  const units = ["B", "KB", "MB", "GB", "TB"];
+function fmtUnits(v, units, base) {
   let i = 0;
-  while (b >= 1024 && i < units.length - 1) { b /= 1024; i++; }
-  const digits = b >= 100 || i === 0 ? 0 : b >= 10 ? 1 : 2;
-  return b.toLocaleString(t("locale"), { minimumFractionDigits: digits, maximumFractionDigits: digits }) + " " + units[i];
+  while (v >= base && i < units.length - 1) { v /= base; i++; }
+  const digits = v >= 100 || i === 0 ? 0 : v >= 10 ? 1 : 2;
+  return v.toLocaleString(t("locale"), { minimumFractionDigits: digits, maximumFractionDigits: digits }) + " " + units[i];
 }
+const fmtBytes = (b) => fmtUnits(b, ["B", "KB", "MB", "GB", "TB"], 1024);
+const fmtRate = (bps) => fmtUnits(bps, ["bit/s", "kbit/s", "Mbit/s", "Gbit/s"], 1000);
 // Flag from regional indicator symbols, Windows only shows the two letters
 const flag = (cc) => (/^[A-Z]{2}$/.test(cc) ? String.fromCodePoint(...[...cc].map((c) => 0x1f1a5 + c.charCodeAt(0))) : "");
 function countryName(cc) {
@@ -48,9 +54,21 @@ function countryName(cc) {
 }
 const countryLabel = (cc) => (flag(cc) ? flag(cc) + " " : "") + countryName(cc);
 const kindName = (k) => t("kinds")[k] || k;
-const pct = (a, b) => (b ? Math.round((a / b) * 100) : 0) + (state.lang === "de" ? " %" : "%");
+const pctText = (p) => p + (state.lang === "de" ? " %" : "%");
+const pct = (a, b) => pctText(b ? Math.round((a / b) * 100) : 0);
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const fmtDate = (day, opts) => new Date(day + "T12:00").toLocaleDateString(t("locale"), opts);
+const shortDate = (day) => fmtDate(day, { day: "numeric", month: "numeric" });
+const fullDate = (day) => fmtDate(day, { day: "numeric", month: "numeric", year: "numeric" });
+const fmtTime = (sec) => new Date(sec * 1000).toLocaleTimeString(t("locale"), { hour: "2-digit", minute: "2-digit" });
+const fmtDay = (sec) => new Date(sec * 1000).toLocaleDateString(t("locale"), { day: "numeric", month: "numeric", year: "numeric" });
+// provider of a visitor (row with org) or a provider row (name is the organisation, LAN or ??)
+function providerName(p) {
+  if (p.org) return p.org;
+  if ("visitors" in p) return t("special_cc")[p.name] || p.name;
+  return t("special_cc")[p.net === "LAN" || p.cc === "LAN" ? "LAN" : "??"];
+}
+const statusLabel = (code) => code + (t("codes")[code] ? " " + t("codes")[code] : "");
 
 async function getJSON(url) {
   const r = await fetch(url);
@@ -58,25 +76,51 @@ async function getJSON(url) {
   return r.json();
 }
 
+// ---------- Tooltips, for mouse and touch ----------
+// Elements carry data-tip (plain text) or data-tipfn (name of a function in tipFns that returns HTML).
+
+const tipFns = {};
+
 function showTip(ev, html) {
   const tip = $("tip");
   tip.innerHTML = html;
   tip.hidden = false;
-  const x = Math.min(ev.clientX + 14, window.innerWidth - tip.offsetWidth - 8);
+  const x = Math.max(8, Math.min(ev.clientX + 14, window.innerWidth - tip.offsetWidth - 8));
   tip.style.left = x + "px";
   tip.style.top = Math.max(8, ev.clientY - tip.offsetHeight - 12) + "px";
 }
 const hideTip = () => ($("tip").hidden = true);
 
+function tipAt(ev) {
+  const el = ev.target.closest?.("[data-tip], [data-tipfn]");
+  if (!el) return null;
+  if (el.dataset.tip) return esc(el.dataset.tip);
+  return tipFns[el.dataset.tipfn]?.(el) || null;
+}
+document.addEventListener("pointermove", (ev) => {
+  if (ev.pointerType !== "mouse") return;
+  const html = tipAt(ev);
+  if (html) showTip(ev, html);
+  else if (!$("tip").hidden) hideTip();
+});
+// touch and pen: a tap shows the tip, a tap elsewhere hides it
+document.addEventListener("pointerdown", (ev) => {
+  if (ev.pointerType === "mouse") return;
+  const html = tipAt(ev);
+  if (html) showTip(ev, html); else hideTip();
+});
+window.addEventListener("scroll", hideTip, { passive: true });
+
 // ---------- Language ----------
 
-// Static texts in the HTML carry data-i18n (text), data-i18n-aria (aria-label) or a page key in data-page
+// Static texts in the HTML carry data-i18n (text), data-i18n-aria (aria-label), data-i18n-tip (tooltip) or a page key in data-page
 function applyLang() {
   nf = new Intl.NumberFormat(t("locale"));
   try { regionNames = new Intl.DisplayNames([state.lang], { type: "region" }); } catch { regionNames = null; }
   document.documentElement.lang = state.lang;
   document.querySelectorAll("[data-i18n]").forEach((el) => (el.textContent = t(el.dataset.i18n)));
   document.querySelectorAll("[data-i18n-aria]").forEach((el) => el.setAttribute("aria-label", t(el.dataset.i18nAria)));
+  document.querySelectorAll("[data-i18n-tip]").forEach((el) => (el.dataset.tip = t(el.dataset.i18nTip)));
   document.querySelectorAll("#nav a, a[data-link]").forEach((a) => a.setAttribute("href", PATHS[a.dataset.page][state.lang] || "./"));
   document.querySelectorAll("#lang button").forEach((b) => b.classList.toggle("on", b.dataset.lang === state.lang));
   const opt = $("host").querySelector('option[value=""]');
@@ -91,7 +135,7 @@ function setLang(lang) {
   // keep the address in the chosen language
   history.replaceState(null, "", pageUrl(state.page, state.country));
   showPage();
-  if (state.meta) renderFoot(state.meta);
+  if (state.meta) renderMeta(state.meta);
   if (state.data) render(state.data);
 }
 
@@ -107,12 +151,32 @@ function niceMax(v) {
   return Math.ceil(n / step) * step * u;
 }
 
-function dayLabel(l, hourly) {
-  if (hourly) return l;
+function dayLabel(l) {
   const [, m, d] = l.split("-");
   return state.lang === "de" ? `${Number(d)}.${Number(m)}.` : `${Number(d)}/${Number(m)}`;
 }
 const longDay = (day) => fmtDate(day, { weekday: "short", day: "numeric", month: "long" });
+
+// label under a chart column and title of its tooltip, for hours, days, weeks and months
+function columnLabel(d, i) {
+  if (d.hourly) return d.labels[i];
+  if (d.step === "week") return t("week_short", { n: d.weeks[i] });
+  if (d.step === "month") return fmtDate(d.labels[i] + "-15", { month: "short", year: "2-digit" });
+  return dayLabel(d.labels[i]);
+}
+function columnTitle(d, i) {
+  if (d.hourly) return t("hour_title", { h: d.labels[i] });
+  const [from, to] = d.ranges[i];
+  if (d.step === "week") return t("week_title", { n: d.weeks[i], from: shortDate(from), to: fullDate(to) });
+  if (d.step === "month") {
+    const name = fmtDate(d.labels[i] + "-15", { month: "long", year: "numeric" });
+    return from.endsWith("-01") ? name : name + " " + t("month_from", { d: shortDate(from) });
+  }
+  return longDay(d.labels[i]);
+}
+
+// automatic chart columns: weeks for a year, otherwise days; weeks and months can be picked from 90 days on
+const chartStep = () => (state.days < 90 ? "day" : state.step || (state.days >= 365 ? "week" : "day"));
 
 function renderChart(d) {
   const el = $("chart");
@@ -141,7 +205,7 @@ function renderChart(d) {
   const every = Math.ceil(n / Math.max(1, Math.floor(iw / 52)));
   for (let i = 0; i < n; i++) {
     const x = pad.l + i * bw;
-    svg += `<g class="col" data-i="${i}">`;
+    svg += `<g class="col" data-i="${i}" data-tipfn="chart">`;
     let acc = 0;
     series.forEach((s, si) => {
       const v = s.values[i];
@@ -152,7 +216,7 @@ function renderChart(d) {
     });
     svg += `<rect class="hit" x="${x}" y="${pad.t}" width="${bw}" height="${ih}"/></g>`;
     if (i % every === 0 || i === n - 1 && n < 10) {
-      svg += `<text class="axis" x="${x + bw / 2}" y="${H - 6}" text-anchor="middle">${dayLabel(d.labels[i], d.hourly)}</text>`;
+      svg += `<text class="axis" x="${x + bw / 2}" y="${H - 6}" text-anchor="middle">${esc(columnLabel(d, i))}</text>`;
     }
   }
   svg += "</svg>";
@@ -160,17 +224,13 @@ function renderChart(d) {
 
   $("legend").innerHTML = series.map((s, i) => `<span><i style="background:${color(i)}"></i>${esc(s.name)}</span>`).join("");
 
-  el.querySelectorAll("g.col").forEach((g) => {
-    g.addEventListener("mousemove", (ev) => {
-      const i = Number(g.dataset.i);
-      const rows = series.map((s, si) => [s.name, s.values[i], si]).filter((r) => r[1] > 0).sort((a, b) => b[1] - a[1]);
-      const title = d.hourly ? t("hour_title", { h: d.labels[i] }) : longDay(d.labels[i]);
-      showTip(ev, `<b>${title}: ${fmtBytes(sums[i])}</b>` + (rows.length
-        ? rows.map((r) => `<div class="row"><span><i style="background:${color(r[2])}"></i>${esc(r[0])}</span><span>${fmtBytes(r[1])}</span></div>`).join("")
-        : `<div>${t("no_traffic")}</div>`));
-    });
-    g.addEventListener("mouseleave", hideTip);
-  });
+  tipFns.chart = (g) => {
+    const i = Number(g.dataset.i);
+    const rows = series.map((s, si) => [s.name, s.values[i], si]).filter((r) => r[1] > 0).sort((a, b) => b[1] - a[1]);
+    return `<b>${esc(columnTitle(d, i))}: ${fmtBytes(sums[i])}</b>` + (rows.length
+      ? rows.map((r) => `<div class="row"><span><i style="background:${color(r[2])}"></i>${esc(r[0])}</span><span>${fmtBytes(r[1])}</span></div>`).join("")
+      : `<div>${t("no_traffic")}</div>`);
+  };
 }
 
 // ---------- World map ----------
@@ -188,48 +248,56 @@ function renderMap(d) {
   for (const [cc, path] of Object.entries(w.shapes)) {
     const c = by[cc];
     const style = c && c.bytes > 0 ? ` style="fill-opacity:${level(c.bytes).toFixed(2)}"` : "";
-    svg += `<path d="${path}" data-cc="${cc}" class="${c && c.bytes > 0 ? "has" : ""}${cc === state.country ? " sel" : ""}"${style}/>`;
+    svg += `<path d="${path}" data-cc="${cc}" data-tipfn="map" class="${c && c.bytes > 0 ? "has" : ""}${cc === state.country ? " sel" : ""}"${style}/>`;
   }
   el.innerHTML = svg + "</svg>";
   // selected country on top so its outline is not covered
   el.querySelector("path.sel")?.parentNode.appendChild(el.querySelector("path.sel"));
 
   const total = d.countries.reduce((a, c) => a + c.bytes, 0);
-  el.querySelectorAll("path").forEach((p) => {
-    p.addEventListener("mousemove", (ev) => {
-      const c = by[p.dataset.cc];
-      showTip(ev, `<b>${esc(countryLabel(p.dataset.cc))}</b>` + (c
-        ? `<div class="row"><span>${t("data")}</span><span>${fmtBytes(c.bytes)} · ${pct(c.bytes, total)}</span></div>`
-          + `<div class="row"><span>${t("requests")}</span><span>${nf.format(c.requests)}</span></div>`
-        : `<div>${t("no_traffic")}</div>`));
-    });
-    p.addEventListener("mouseleave", hideTip);
-    p.addEventListener("click", () => { hideTip(); setCountry(p.dataset.cc); });
-  });
+  tipFns.map = (p) => {
+    const c = by[p.dataset.cc];
+    return `<b>${esc(countryLabel(p.dataset.cc))}</b>` + (c
+      ? `<div class="row"><span>${t("data")}</span><span>${fmtBytes(c.bytes)} · ${pct(c.bytes, total)}</span></div>`
+        + `<div class="row"><span>${t("requests")}</span><span>${nf.format(c.requests)}</span></div>`
+      : `<div>${t("no_traffic")}</div>`);
+  };
+  el.querySelectorAll("path").forEach((p) => p.addEventListener("click", () => { hideTip(); setCountry(p.dataset.cc); }));
 }
 
-// ---------- Lists and tables ----------
+// ---------- Lists ----------
 
-function renderBars(id, rows, opts = {}) {
-  const el = $(id);
-  if (!rows.length) { el.innerHTML = `<div class="empty">${t("empty")}</div>`; return; }
+function barsHtml(rows, opts = {}) {
+  if (!rows.length) return `<div class="empty">${t("empty")}</div>`;
   const total = opts.total ?? rows.reduce((a, r) => a + r.bytes, 0);
   const top = rows[0].bytes || 1;
-  el.innerHTML = rows.slice(0, opts.limit || 8).map((r, i) => {
-    const name = opts.label ? opts.label(r.name) : r.name;
+  return rows.slice(0, opts.limit || 8).map((r, i) => {
+    const name = opts.label ? opts.label(r) : r.name;
     const sel = opts.selected && opts.selected === r.name ? " sel" : "";
+    const extra = opts.extra ? " · " + opts.extra(r) : "";
     return `<div class="bar-row${opts.click ? " click" : ""}${sel}" data-name="${esc(r.name)}" title="${t("n_requests", { n: nf.format(r.requests) })}">
       <span class="n">${esc(name)}${opts.sub && r.sub ? `<small>${esc(r.sub)}</small>` : ""}</span>
-      <span class="v">${r.bytes ? fmtBytes(r.bytes) + " · " + pct(r.bytes, total) : t("n_requests_no_data", { n: nf.format(r.requests) })}</span>
+      <span class="v">${r.bytes ? fmtBytes(r.bytes) + " · " + pct(r.bytes, total) : t("n_requests_no_data", { n: nf.format(r.requests) })}${esc(extra)}</span>
       <div class="track"><div class="fill" style="width:${(r.bytes / top) * 100}%;background:${color(opts.mono ? 0 : i)}"></div></div>
     </div>`;
   }).join("");
+}
+
+function renderBars(id, rows, opts = {}) {
+  const el = $(id);
+  el.innerHTML = barsHtml(rows, opts);
   if (opts.click) el.querySelectorAll(".bar-row").forEach((row) => row.addEventListener("click", () => opts.click(row.dataset.name)));
+}
+
+function daysHtml(days) {
+  const max = Math.max(1, ...days.map((x) => x.bytes));
+  return `<div class="days" style="grid-template-columns:repeat(${days.length},1fr)">${days.map((x) =>
+    `<div style="height:${(x.bytes / max) * 100}%" data-tip="${esc(longDay(x.day) + ": " + fmtBytes(x.bytes))}"></div>`).join("")}</div>`;
 }
 
 function renderHod(hod) {
   const max = Math.max(1, ...hod);
-  $("hod").innerHTML = hod.map((v, h) => `<div style="height:${(v / max) * 100}%" title="${t("hod_tip", { h, h2: h + 1, v: fmtBytes(v) })}"></div>`).join("");
+  $("hod").innerHTML = hod.map((v, h) => `<div style="height:${(v / max) * 100}%" data-tip="${esc(t("hod_tip", { h, h2: h + 1, v: fmtBytes(v) }))}"></div>`).join("");
   let axis = $("hod").nextElementSibling;
   if (!axis || !axis.classList.contains("hod-axis")) {
     axis = document.createElement("div");
@@ -239,24 +307,158 @@ function renderHod(hod) {
   axis.innerHTML = t("hod_axis").map((l) => `<span>${l}</span>`).join("");
 }
 
-function renderTable(el, head, rows) {
-  if (typeof el === "string") el = $(el);
+// ---------- Tables: sorting, search, more rows, details per row ----------
+// cols: { key, label, num, value(row) for sorting, html(row) }; opts: { key(row), search(row), placeholder, sort, expand(key) }
+
+const tables = {};
+
+function dataTable(id, cols, rows, opts) {
+  let s = tables[id];
+  if (!s) {
+    const box = $(id);
+    box.innerHTML = (opts.search ? `<input type="search" class="search">` : "")
+      + `<div class="table-wrap"><table></table></div><div class="tbl-foot"><span class="count"></span><button class="link more-rows" hidden></button></div>`;
+    s = tables[id] = { sort: opts.sort, dir: -1, q: "", n: PAGE_ROWS, open: new Map() };
+    box.querySelector(".search")?.addEventListener("input", (e) => { s.q = e.target.value; s.n = PAGE_ROWS; drawTable(id); });
+    box.querySelector(".more-rows").addEventListener("click", () => { s.n += PAGE_ROWS; drawTable(id); });
+    box.querySelector("table").addEventListener("click", (e) => {
+      const th = e.target.closest("th[data-key]");
+      if (th) {
+        const col = s.cols.find((c) => c.key === th.dataset.key);
+        if (s.sort === col.key) s.dir = -s.dir; else { s.sort = col.key; s.dir = col.num ? -1 : 1; }
+        return drawTable(id);
+      }
+      const tr = e.target.closest("tr.row");
+      if (tr && s.opts.expand && !e.target.closest("a")) toggleRow(id, tr.dataset.key);
+    });
+    box.querySelector("table").addEventListener("keydown", (e) => {
+      const tr = e.target.closest("tr.row");
+      if (tr && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); toggleRow(id, tr.dataset.key); }
+    });
+  }
+  Object.assign(s, { cols, rows, opts });
+  drawTable(id);
+}
+
+function setTableSearch(id, q) {
+  const s = tables[id];
+  if (!s) return;
+  s.q = q; s.n = PAGE_ROWS;
+  const input = $(id).querySelector(".search");
+  if (input) input.value = q;
+  drawTable(id);
+}
+
+function drawTable(id) {
+  const s = tables[id], box = $(id), { cols, opts } = s;
+  const input = box.querySelector(".search");
+  if (input) input.placeholder = t(opts.placeholder);
+  const q = s.q.trim().toLowerCase();
+  const rows = q ? s.rows.filter((r) => opts.search(r).toLowerCase().includes(q)) : s.rows.slice();
+  const col = cols.find((c) => c.key === s.sort);
+  if (col) {
+    rows.sort((a, b) => {
+      const x = col.value(a), y = col.value(b);
+      return (typeof x === "number" ? x - y : String(x).localeCompare(String(y), t("locale"), { numeric: true })) * s.dir;
+    });
+  }
+  const table = box.querySelector("table");
+  const head = "<thead><tr>" + cols.map((c) => {
+    const on = c.key === s.sort;
+    const sortAttr = on ? ` aria-sort="${s.dir > 0 ? "ascending" : "descending"}"` : "";
+    return `<th class="sortable${c.num ? " num" : ""}${c.wide ? " wide-only" : ""}${on ? " on" : ""}" data-key="${c.key}"${sortAttr}>${esc(t(c.label))}<span class="arrow">${on ? (s.dir > 0 ? "▲" : "▼") : ""}</span></th>`;
+  }).join("") + "</tr></thead>";
+  if (!rows.length) {
+    table.innerHTML = head + `<tbody><tr><td class="empty" colspan="${cols.length}">${t(s.rows.length ? "no_match" : "empty")}</td></tr></tbody>`;
+  } else {
+    table.innerHTML = head + "<tbody>" + rows.slice(0, s.n).map((r) => {
+      const key = opts.key(r), open = s.open.has(key);
+      const attrs = opts.expand ? ` class="row click${open ? " open" : ""}" tabindex="0" aria-expanded="${open}"` : "";
+      let h = `<tr data-key="${esc(key)}"${attrs}>` + cols.map((c) => `<td class="${cellClass(c)}">${c.html(r)}</td>`).join("") + "</tr>";
+      if (open) h += `<tr class="detail"><td colspan="${cols.length}">${s.open.get(key) || `<span class="empty">${t("loading_short")}</span>`}</td></tr>`;
+      return h;
+    }).join("") + "</tbody>";
+  }
+  box.querySelector(".count").textContent = rows.length > PAGE_ROWS || q ? t("shown", { n: nf.format(Math.min(s.n, rows.length)), total: nf.format(rows.length) }) : "";
+  const more = box.querySelector(".more-rows");
+  more.hidden = rows.length <= s.n;
+  more.textContent = t("show_more", { n: nf.format(Math.min(PAGE_ROWS, rows.length - s.n)) });
+}
+
+// wide: column only shown on wider screens, its content is in the details too
+const cellClass = (c) => [c.num && "num", c.cls, c.wide && "wide-only"].filter(Boolean).join(" ");
+
+async function toggleRow(id, key) {
+  const s = tables[id];
+  if (s.open.has(key)) { s.open.delete(key); drawTable(id); return; }
+  s.open.set(key, "");
+  drawTable(id);
+  let html;
+  try { html = await s.opts.expand(key); } catch (e) { html = `<span class="err">${esc(e.message)}</span>`; }
+  if (s.open.has(key)) { s.open.set(key, html); drawTable(id); }
+}
+
+// details already loaded belong to the old time range or domain
+const closeDetails = () => Object.values(tables).forEach((s) => s.open.clear());
+
+const sizeCols = [
+  { key: "bytes", label: "col_data", num: true, value: (r) => r.bytes, html: (r) => fmtBytes(r.bytes) },
+  { key: "requests", label: "col_requests", num: true, value: (r) => r.requests, html: (r) => nf.format(r.requests) },
+];
+const pathCell = (r, d) => `${esc(r.name)}${d.host ? "" : `<span class="host">${esc(r.host)}</span>`}`;
+const kindsText = (r) => r.kinds.map(kindName).join(", ");
+
+function visitorCols() {
+  const cols = [
+    { key: "name", label: "col_address", value: (r) => r.name, cls: "addr",
+      html: (r) => `${esc(r.name)}<span class="badge">${esc(r.net)}</span>${r.kinds.length ? `<span class="host">${esc(kindsText(r))}</span>` : ""}` },
+    { key: "cc", label: "col_country", wide: true, value: (r) => countryName(r.cc), html: (r) => esc(countryLabel(r.cc)) },
+  ];
+  if (state.meta?.asn_ready) cols.push({ key: "org", label: "col_provider", wide: true, value: (r) => providerName(r), html: (r) => esc(providerName(r)) });
+  return cols.concat(sizeCols);
+}
+
+async function visitorDetail(ip) {
+  const q = `ip=${encodeURIComponent(ip)}&days=${state.days}&host=${encodeURIComponent(state.host)}&bots=${state.bots ? 1 : 0}`;
+  const c = await getJSON("api/client?" + q);
+  const prov = c.asn ? `${providerName(c)} (AS${c.asn})` : providerName(c);
+  const facts = [
+    [t("d_country"), countryLabel(c.cc)],
+    [t("d_provider"), prov],
+    [t("d_kinds"), c.kinds.map((k) => kindName(k.name)).join(", ") || t("unknown")],
+    [t("d_active"), c.last ? t("d_active_days", { n: c.active, m: c.days.length, d: shortDate(c.last) }) : t("unknown")],
+  ];
+  return `<div class="visitor">
+    <dl class="facts compact">${facts.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("")}</dl>
+    <div><p class="sub-head">${t("d_domains")}</p><div class="bars">${barsHtml(c.hosts, { mono: true, limit: 10 })}</div></div>
+    <div><p class="sub-head">${t("d_days")}</p>${daysHtml(c.days)}</div>
+  </div>`;
+}
+
+// ---------- Pages ----------
+
+const clientRow = (c) =>
+  `<tr><td>${esc(c.name)}<span class="badge">${esc(c.net)}</span>${c.org ? `<span class="host">${esc(c.org)}</span>` : ""}</td>`
+  + `<td class="num">${fmtBytes(c.bytes)}</td><td class="num">${nf.format(c.requests)}</td></tr>`;
+
+function renderSimpleTable(id, head, rows) {
+  const el = $(id);
   if (!rows.length) { el.innerHTML = `<tr><td class="empty">${t("empty")}</td></tr>`; return; }
   el.innerHTML = "<thead><tr>" + head.map((h, i) => `<th${i ? ' class="num"' : ""}>${t(h)}</th>`).join("") + "</tr></thead><tbody>" + rows.join("") + "</tbody>";
 }
 
-const clientRow = (c, withCountry = true) =>
-  `<tr><td>${esc(c.name)}<span class="badge">${esc(c.net)}</span>${withCountry ? `<span class="host">${esc(countryLabel(c.cc))}</span>` : ""}</td>`
-  + `<td class="num">${fmtBytes(c.bytes)}</td><td class="num">${nf.format(c.requests)}</td></tr>`;
+function dbNote(on, ready, error, prefix) {
+  if (on === false) return t(prefix + "_off");
+  if (!ready) return error ? t(prefix + "_error", { error }) : t(prefix + "_loading");
+  return "";
+}
 
 function renderGeoNote(d) {
   const m = state.meta || {};
   const total = d.countries.reduce((a, c) => a + c.bytes, 0);
   const cf = d.countries.find((c) => c.name === "CLOUDFLARE");
-  let note = "";
-  if (m.geo === false) note = t("geo_off");
-  else if (!m.geo_ready) note = m.geo_error ? t("geo_error", { error: m.geo_error }) : t("geo_loading");
-  else if (cf && total && cf.bytes / total > 0.2) note = t("geo_cloudflare", { p: pct(cf.bytes, total) });
+  let note = dbNote(m.geo, m.geo_ready, m.geo_error, "geo");
+  if (!note && cf && total && cf.bytes / total > 0.2) note = t("geo_cloudflare", { p: pct(cf.bytes, total) });
   $("geo-note").textContent = note;
   $("geo-note").hidden = !note;
 }
@@ -274,7 +476,6 @@ function renderCountry(d) {
   const total = d.countries.reduce((a, x) => a + x.bytes, 0);
   const sum = c.hosts.reduce((a, h) => a + h.bytes, 0);
   const req = c.hosts.reduce((a, h) => a + h.requests, 0);
-  const maxDay = Math.max(1, ...c.days.map((x) => x.bytes));
   el.innerHTML = `
     <div class="mini-kpis">
       <div><span class="label">${t("data")}</span><b>${fmtBytes(sum)}</b><span class="hint">${t("of_all_countries", { p: pct(sum, total) })}</span></div>
@@ -282,27 +483,55 @@ function renderCountry(d) {
       <div><span class="label">${t("kpi_visitors")}</span><b>${nf.format(c.visitors)}</b></div>
     </div>
     <p class="sub-head">${t("country_days")}</p>
-    <div class="days" style="grid-template-columns:repeat(${c.days.length},1fr)">${c.days.map((x) =>
-      `<div style="height:${(x.bytes / maxDay) * 100}%" title="${longDay(x.day)}: ${fmtBytes(x.bytes)}"></div>`).join("")}</div>
+    ${daysHtml(c.days)}
     <p class="sub-head">${t("domains")}</p>
-    <div class="bars" id="c-hosts"></div>
+    <div class="bars">${barsHtml(c.hosts, { mono: true, limit: 10 })}</div>
     <p class="sub-head">${t("country_clients")}</p>
     <div class="table-wrap"><table id="c-clients"></table></div>`;
-  renderBars("c-hosts", c.hosts, { mono: true, limit: 10 });
-  renderTable("c-clients", ["col_address", "col_data", "col_requests"], c.clients.slice(0, 15).map((x) => clientRow(x, false)));
+  renderSimpleTable("c-clients", ["col_address", "col_data", "col_requests"], c.clients.slice(0, 15).map(clientRow));
+}
+
+// change against the previous period of the same length, below a key figure
+function setDelta(id, cur, prev, fmt) {
+  const el = $(id);
+  el.className = "delta";
+  if (prev == null) { el.textContent = ""; el.removeAttribute("data-tip"); return; }
+  if (!prev) {
+    el.textContent = cur ? t("prev_new") : "";
+  } else {
+    const p = Math.round((cur / prev - 1) * 100);
+    el.textContent = (p > 0 ? "▲ +" : p < 0 ? "▼ " : "") + t("vs_prev", { p: pctText(p) });
+    el.classList.add(p > 0 ? "up" : p < 0 ? "down" : "same");
+  }
+  el.dataset.tip = t("prev_value", { v: fmt(prev) });
+}
+
+function renderKpis(d) {
+  const days = d.hourly ? 1 : d.days, tot = d.total, prev = d.prev;
+  const bps = (p) => (p ? (p.bytes * 8) / 3600 : 0);
+  $("k-bytes").textContent = fmtBytes(tot.bytes);
+  $("k-bytes-day").textContent = d.hourly ? t("last_24h") : t("per_day", { v: fmtBytes(tot.bytes / days) });
+  $("k-req").textContent = nf.format(tot.requests);
+  $("k-req-avg").textContent = tot.requests ? t("per_request", { v: fmtBytes(tot.bytes / tot.requests) }) : "";
+  $("k-inet").textContent = fmtBytes(tot.internet);
+  $("k-inet-share").textContent = t("share_of_bytes", { p: pct(tot.internet, tot.bytes) });
+  $("k-peak").textContent = fmtRate(bps(tot.peak));
+  $("k-peak-when").textContent = tot.peak ? t("peak_when", {
+    when: new Date(tot.peak.ts * 1000).toLocaleString(t("locale"), { weekday: "short", day: "numeric", month: "numeric", hour: "2-digit", minute: "2-digit" }),
+  }) : t("peak_none");
+  $("k-vis").textContent = nf.format(tot.visitors);
+  setDelta("k-bytes-d", tot.bytes, prev?.bytes, fmtBytes);
+  setDelta("k-req-d", tot.requests, prev?.requests, (v) => nf.format(v));
+  setDelta("k-inet-d", tot.internet, prev?.internet, fmtBytes);
+  setDelta("k-peak-d", bps(tot.peak), prev ? bps(prev.peak) : null, fmtRate);
+  setDelta("k-vis-d", tot.visitors, prev?.visitors, (v) => nf.format(v));
 }
 
 function render(d) {
-  const days = d.hourly ? 1 : d.days;
-  $("k-bytes").textContent = fmtBytes(d.total.bytes);
-  $("k-bytes-day").textContent = d.hourly ? t("last_24h") : t("per_day", { v: fmtBytes(d.total.bytes / days) });
-  $("k-req").textContent = nf.format(d.total.requests);
-  $("k-req-avg").textContent = d.total.requests ? t("per_request", { v: fmtBytes(d.total.bytes / d.total.requests) }) : "";
-  $("k-inet").textContent = fmtBytes(d.total.internet);
-  $("k-inet-share").textContent = t("share_of_bytes", { p: pct(d.total.internet, d.total.bytes) });
-  $("k-vis").textContent = nf.format(d.total.visitors);
-
-  $("chart-title").textContent = t(d.hourly ? "chart_hour" : "chart_day") + " " + t(d.host ? "by_area" : "by_domain");
+  renderKpis(d);
+  $("chart-title").textContent = t(d.hourly ? "chart_hour" : "chart_" + d.step) + " " + t(d.host ? "by_area" : "by_domain");
+  $("step").hidden = d.days < 90;
+  document.querySelectorAll("#step button").forEach((b) => b.classList.toggle("on", b.dataset.step === d.step));
   renderChart(d);
 
   if (d.host) {
@@ -312,25 +541,129 @@ function render(d) {
     $("t-group").textContent = t("domains");
     renderBars("b-group", d.hosts, { click: (h) => setHost(h) });
   }
-  renderBars("b-kinds", d.kinds, { label: kindName });
-  renderBars("b-countries-top", d.countries, { limit: 6, mono: true, label: countryLabel, click: (cc) => go("geo", cc) });
+  renderBars("b-kinds", d.kinds, { label: (r) => kindName(r.name) });
+  renderBars("b-countries-top", d.countries, { limit: 6, mono: true, label: (r) => countryLabel(r.name), click: (cc) => go("geo", cc) });
 
   renderBars("b-areas", d.areas, { limit: 15, mono: true, sub: !d.host });
-  renderBars("b-status", d.statuses, { label: (s) => t("status")[s] || s });
+  renderBars("b-status", d.statuses, { label: (r) => t("status")[r.name] || r.name });
   renderBars("b-nets", d.nets);
   renderHod(d.hod);
+  renderNotes(d);
+  dataTable("t-errors", [
+    { key: "name", label: "col_path", value: (r) => r.name, cls: "path", html: (r) => pathCell(r, d) },
+    { key: "status", label: "col_status", value: (r) => r.status, html: (r) => `<span class="code c${esc(r.status[0])}">${esc(r.status)}</span> ${esc(t("codes")[r.status] || "")}` },
+    sizeCols[1],
+  ], d.errors, {
+    key: (r) => r.host + r.name + r.status, sort: "requests", placeholder: "search_errors",
+    search: (r) => `${r.name} ${r.host} ${statusLabel(r.status)}`,
+  });
 
   renderMap(d);
-  renderBars("b-countries", d.countries, { limit: 300, mono: true, label: countryLabel, click: setCountry, selected: state.country });
+  renderBars("b-countries", d.countries, { limit: 300, mono: true, label: (r) => countryLabel(r.name), click: setCountry, selected: state.country });
   renderGeoNote(d);
   renderCountry(d);
 
-  renderTable("t-clients", ["col_address", "col_data", "col_requests"], d.clients.map((c) => clientRow(c)));
-  renderTable("t-paths", ["col_path", "col_data", "col_requests"], d.paths.map((p) =>
-    `<tr><td class="path">${esc(p.name)}${d.host ? "" : `<span class="host">${esc(p.host)}</span>`}</td><td class="num">${fmtBytes(p.bytes)}</td><td class="num">${nf.format(p.requests)}</td></tr>`));
+  const m = state.meta || {};
+  const asnNote = dbNote(m.asn, m.asn_ready, m.asn_error, "asn");
+  $("providers-note").textContent = asnNote || t("providers_note");
+  const search = tables["t-clients"]?.q || "";
+  renderBars("b-providers", d.providers, {
+    limit: 12, mono: true, label: (r) => providerName(r), selected: d.providers.find((p) => providerName(p) === search)?.name,
+    extra: (r) => (r.visitors === 1 ? t("n_ip") : t("n_ips", { n: nf.format(r.visitors) })),
+    click: (name) => {
+      const p = d.providers.find((x) => x.name === name);
+      const label = providerName(p);
+      setTableSearch("t-clients", tables["t-clients"]?.q === label ? "" : label);
+      render(state.data);
+    },
+  });
+  dataTable("t-clients", visitorCols(), d.clients, {
+    key: (r) => r.name, sort: "bytes", placeholder: "search_visitors", expand: visitorDetail,
+    search: (r) => `${r.name} ${countryName(r.cc)} ${r.cc} ${providerName(r)} ${r.asn ? "AS" + r.asn : ""} ${kindsText(r)}`,
+  });
+  dataTable("t-paths", [
+    { key: "name", label: "col_path", value: (r) => r.name, cls: "path", html: (r) => pathCell(r, d) },
+    ...sizeCols,
+  ], d.paths, { key: (r) => r.host + r.name, sort: "bytes", placeholder: "search_paths", search: (r) => r.name + " " + r.host });
 }
 
-// ---------- Pages ----------
+// notes about data that is only recorded since the update to 0.1.0
+function renderNotes(d) {
+  const since = state.meta?.detail_since;
+  const old = since && d.start_day < since;
+  $("bots-note").hidden = !(old && !state.bots);
+  $("bots-note").textContent = t("bots_note", { d: since ? fullDate(since) : "" });
+  $("errors-note").textContent = t("errors_note") + (old ? " " + t("errors_since", { d: fullDate(since) }) : "");
+}
+
+// GitHub issue with the version filled in, like in BoatSpeedy
+function issueUrl(repo, prefix, label, version) {
+  const body = `\n\n---\n**NPMcountdy:** ${version}\n`;
+  return `${repo}/issues/new?labels=${encodeURIComponent(label)}&title=${encodeURIComponent(prefix)}&body=${encodeURIComponent(body)}`;
+}
+
+let updateChecking = false;
+
+function renderUpdate(u) {
+  const box = $("update-box");
+  if (!u) { box.innerHTML = ""; return; }
+  if (!u.on) { box.innerHTML = `<p class="muted">${esc(t("update_off"))}</p>`; return; }
+  let html;
+  if (updateChecking) html = `<p class="muted">${esc(t("checking"))}</p>`;
+  else if (u.newer) {
+    html = `<p class="update-new">${esc(t("update_available", { v: u.latest }))}</p>
+      <a class="more" href="${esc(u.url)}" target="_blank" rel="noopener">${esc(t("update_open"))}</a>
+      <p class="muted">${esc(t("update_how"))}</p>
+      <pre class="cmd">cd ~/npmcountdy\ngit pull\nsudo docker compose up -d --build</pre>`;
+  } else if (u.latest) html = `<p>${esc(t("up_to_date"))}</p>`;
+  else html = u.error ? `<p class="err">${esc(t("update_failed", { e: u.error }))}</p>` : `<p class="muted">${esc(t("checking"))}</p>`;
+  if (!updateChecking && u.latest && u.error) html += `<p class="err">${esc(t("update_failed", { e: u.error }))}</p>`;
+  if (u.checked) html += `<p class="muted">${esc(t("update_checked", { d: fmtDay(u.checked), t: fmtTime(u.checked) }))}</p>`;
+  html += `<button class="btn" id="update-check"${updateChecking ? " disabled" : ""}>${esc(t("check_update"))}</button>`
+    + `<p class="note">${esc(t("update_note"))}</p>`;
+  box.innerHTML = html;
+  $("update-check").addEventListener("click", checkUpdate);
+}
+
+async function checkUpdate() {
+  updateChecking = true;
+  renderUpdate(state.meta?.update);
+  try {
+    const u = await getJSON("api/update?check=1");
+    if (state.meta) state.meta.update = u;
+  } catch (e) {
+    if (state.meta?.update) state.meta.update.error = e.message;
+  }
+  updateChecking = false;
+  if (state.meta) renderMeta(state.meta);
+}
+
+function renderAbout(m) {
+  $("about-version").textContent = m.version ? t("version_label", { v: m.version }) : "";
+  const repo = m.repo || "https://github.com/Glenn-Dandy/NPMcountdy";
+  document.querySelectorAll(".repo-link").forEach((a) => (a.href = repo));
+  $("report-bug").href = issueUrl(repo, "[Bug] ", "bug", m.version);
+  $("request-feature").href = issueUrl(repo, "[Feature] ", "enhancement", m.version);
+  renderUpdate(m.update);
+  const db = (on, ready, error, date) => (on === false ? t("v_off") : ready ? t("v_from", { d: fullDate(date) })
+    : error ? t("v_error", { e: error }) : t("v_loading"));
+  const facts = [
+    ["f_version", m.version],
+    ["f_since", m.first_day ? fullDate(m.first_day) : t("unknown")],
+    ["f_read", m.last_ingest ? t("v_read", { d: fmtDay(m.last_ingest), t: fmtTime(m.last_ingest) }) : t("unknown")],
+    ["f_lines", nf.format(m.last_lines || 0)],
+    ["f_interval", t("v_interval", { n: m.interval })],
+    ["f_domains", nf.format(m.hosts.length)],
+    ["f_db", fmtBytes(m.db_size || 0)],
+    ["f_history", t("v_forever")],
+    ["f_kept", t("v_days", { n: m.detail_days })],
+    ["f_geo", db(m.geo, m.geo_ready, m.geo_error, m.geo_date)],
+    ["f_asn", db(m.asn, m.asn_ready, m.asn_error, m.asn_date)],
+    ["f_clear", m.clear ? t("v_on") : t("v_off")],
+  ];
+  if (m.last_error) facts.push(["f_error", m.last_error]);
+  $("about-status").innerHTML = facts.map(([k, v]) => `<dt>${esc(t(k))}</dt><dd>${esc(v)}</dd>`).join("");
+}
 
 function readRoute() {
   const seg = location.pathname.replace(/\/+$/, "").split("/").pop();
@@ -374,6 +707,7 @@ function setHost(h) {
   $("host").value = h;
   $("clear-msg").hidden = true;
   updateClear();
+  closeDetails();
   load();
 }
 
@@ -419,16 +753,23 @@ async function clearHost() {
 
 function renderFoot(m) {
   const parts = [];
-  if (m.version) parts.push("NPMcountdy " + m.version);
-  if (m.first_day) parts.push(t("foot_since", { d: fmtDate(m.first_day) }));
-  if (m.last_ingest) parts.push(t("foot_read", { t: new Date(m.last_ingest * 1000).toLocaleTimeString(t("locale"), { hour: "2-digit", minute: "2-digit" }) }));
-  parts.push(t("foot_kept", { n: m.detail_days }));
-  parts.push(t("foot_counted"));
-  if (m.geo_date) parts.push(t("foot_geo", { d: fmtDate(m.geo_date) }));
-  $("foot").innerHTML = esc(parts.join(" · "))
-    + (m.geo ? ' · <a href="https://db-ip.com" target="_blank" rel="noopener">IP Geolocation by DB-IP</a>' : "")
-    + " · " + esc(t("foot_map"))
+  if (m.first_day) parts.push(esc(t("foot_since", { d: fmtDate(m.first_day) })));
+  if (m.last_ingest) parts.push(esc(t("foot_read", { d: fmtDay(m.last_ingest), t: fmtTime(m.last_ingest) })));
+  parts.push(esc(t("foot_kept", { n: m.detail_days })));
+  parts.push(esc(t("foot_counted")));
+  if (m.geo_date) parts.push(esc(t("foot_geo", { d: fmtDate(m.geo_date) })));
+  if (m.geo || m.asn) parts.push('<a href="https://db-ip.com" target="_blank" rel="noopener">IP Geolocation by DB-IP</a>');
+  parts.push(esc(t("foot_map")));
+  const version = m.version ? `<a href="${PATHS.about[state.lang]}" data-page="about" data-link>NPMcountdy ${esc(m.version)}</a> · ` : "";
+  const update = m.update?.newer
+    ? `<a class="update-hint" href="${PATHS.about[state.lang]}" data-page="about" data-link>${esc(t("foot_update", { v: m.update.latest }))}</a><br>` : "";
+  $("foot").innerHTML = update + version + parts.join(" · ")
     + (m.last_error ? `<br><span class="err">${esc(t("foot_error", { error: m.last_error }))}</span>` : "");
+}
+
+function renderMeta(m) {
+  renderFoot(m);
+  renderAbout(m);
 }
 
 async function loadMeta() {
@@ -440,13 +781,15 @@ async function loadMeta() {
   if (cur && !m.hosts.includes(cur)) sel.insertAdjacentHTML("beforeend", `<option>${esc(cur)}</option>`);
   sel.value = cur;
   updateClear();
-  renderFoot(m);
+  renderMeta(m);
 }
 
 async function load() {
   document.querySelectorAll("#range button").forEach((b) => b.classList.toggle("on", Number(b.dataset.days) === state.days));
+  $("bots").checked = state.bots;
   try {
-    const q = `days=${state.days}&host=${encodeURIComponent(state.host)}&country=${encodeURIComponent(state.country)}`;
+    const q = `days=${state.days}&host=${encodeURIComponent(state.host)}&country=${encodeURIComponent(state.country)}`
+      + `&bots=${state.bots ? 1 : 0}&step=${chartStep()}`;
     const d = await getJSON("api/summary?" + q);
     state.data = d;
     render(d);
@@ -457,9 +800,21 @@ async function load() {
 
 document.querySelectorAll("#range button").forEach((b) => b.addEventListener("click", () => {
   state.days = Number(b.dataset.days);
+  state.step = "";
   store.set("days", String(state.days));
+  closeDetails();
   load();
 }));
+document.querySelectorAll("#step button").forEach((b) => b.addEventListener("click", () => {
+  state.step = b.dataset.step;
+  load();
+}));
+$("bots").addEventListener("change", (e) => {
+  state.bots = e.target.checked;
+  store.set("bots", state.bots ? "1" : "0");
+  closeDetails();
+  load();
+});
 document.querySelectorAll("#lang button").forEach((b) => b.addEventListener("click", () => setLang(b.dataset.lang)));
 $("host").addEventListener("change", (e) => setHost(e.target.value));
 $("clear-open").addEventListener("click", () => {
@@ -471,11 +826,13 @@ $("clear-open").addEventListener("click", () => {
 $("clear-no").addEventListener("click", () => { $("clear-box").hidden = true; updateClear(); });
 $("clear-yes").addEventListener("click", clearHost);
 $("country-clear").addEventListener("click", () => setCountry(state.country));
-document.querySelectorAll("#nav a, a[data-link]").forEach((a) => a.addEventListener("click", (e) => {
-  if (e.ctrlKey || e.metaKey || e.shiftKey || e.button) return;  // let new tabs through
+// links to pages, also those drawn later (footer)
+document.addEventListener("click", (e) => {
+  const a = e.target.closest("a[data-page]");
+  if (!a || e.ctrlKey || e.metaKey || e.shiftKey || e.button) return;  // let new tabs through
   e.preventDefault();
   go(a.dataset.page);
-}));
+});
 window.addEventListener("popstate", () => {
   const before = state.country;
   readRoute();

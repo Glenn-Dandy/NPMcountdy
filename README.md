@@ -2,11 +2,11 @@
 
 **English** · [Deutsch](README.de.md)
 
-Version 0.0.2
+Version 0.1.0
 
 Shows how much data Nginx Proxy Manager (NPM) has served: per domain, per area
 (e.g. `/mapdata/` of BoatSpeedy), per file, per visitor, by time of day, by client type
-(browser, BoatSpeedy app, Nextcloud clients, bots) and by country.
+(browser, BoatSpeedy app, Nextcloud clients, bots), by country and by provider (network of the visitor IP).
 
 - Follows NPM's `/opt/data/logs/proxy-host-*_access.log` read-only, once a minute.
 - Stores the figures in `./data/npmcountdy.db` (SQLite). Hourly figures are kept forever,
@@ -18,12 +18,24 @@ Shows how much data Nginx Proxy Manager (NPM) has served: per domain, per area
   cannot be reached, the same data is fetched via [jsDelivr](https://www.jsdelivr.com/package/npm/@ip-location-db/dbip-country-mmdb).
   If both fail, you can put the file in place by hand as `./data/dbip-country-lite.mmdb`.
   Visitor IPs never leave the server, lookups happen locally.
+- Providers come from [DB-IP IP to ASN Lite](https://db-ip.com/db/download/ip-to-asn-lite) (CC BY 4.0),
+  downloaded and renewed like the countries, with the same jsDelivr fallback, or put in place by hand
+  as `./data/dbip-asn-lite.mmdb`.
 - If the country database only arrives later, countries are assigned afterwards, as far as the
   visitor IPs are still stored (`DETAIL_DAYS`).
 - The world map (`app/static/world.json`) is based on [Natural Earth](https://www.naturalearthdata.com/)
   (public domain) and built with `tools/make_world.py`, see the header of that file.
 - The UI is available in English and German. It follows the browser language, the switch is at
   the bottom of the menu on the left, and the browser remembers the choice.
+- Key figures compared with the previous period of the same length, peak load to the internet in Mbit/s
+  (hourly average), year view by weeks or months.
+- Switch "Include bots and scanners" in the menu (default: on). Switched off, they are left out of all figures.
+- Failed requests (4xx, 5xx) per path and status code under Breakdown, e.g. missing map tiles.
+- Tables can be sorted and searched, clicking a visitor IP shows its domains, client types and history.
+  Tooltips also work by tapping on phones.
+- "About" page with status, feedback links and an update check: every 12 hours the server asks GitHub
+  for the highest version tag `vX.Y.Z` (tags with a suffix such as `-dev` do not count). If there is a
+  newer version, every page says so at the bottom.
 - Python standard library only, no extra packages.
 
 ## Running it on the NPM host (<NPM-IP>)
@@ -38,12 +50,13 @@ UI: `http://<NPM-IP>:7881` with these pages
 | Address | Content |
 |---|---|
 | `/` | Overview: key figures, history, domains, client types, top countries |
-| `/traffic` | Areas, time of day, responses, LAN or internet |
+| `/traffic` | Areas, time of day, responses, LAN or internet, failed requests |
 | `/countries` | World map and all countries, `/countries?country=DE` shows one country in detail |
-| `/visitors` | Top visitor IPs with country |
+| `/visitors` | Providers and visitor IPs with country, provider and details |
 | `/files` | Largest files and paths |
+| `/about` | Version, status, sources and licences |
 
-The German addresses (`/verteilung`, `/laender?land=DE`, `/besucher`, `/dateien`) work as well.
+The German addresses (`/verteilung`, `/laender?land=DE`, `/besucher`, `/dateien`, `/ueber`) work as well.
 
 There is no login. Only run it in your LAN. To reach it as `traffic.example.com` through NPM:
 
@@ -63,6 +76,23 @@ There is no login. Only run it in your LAN. To reach it as `traffic.example.com`
 | `CLEAR` | on | Allow deleting a domain's data in the UI, `off` disables it |
 | `GEOIP` | on | Country lookup, `off` disables it |
 | `GEOIP_URL` | empty | Custom address for the MMDB file (`.gz` works too), empty: DB-IP of the current month |
+| `ASN` | on | Provider lookup, `off` disables it |
+| `ASN_URL` | empty | Custom address for the provider MMDB file, empty: DB-IP of the current month |
+| `UPDATE_CHECK` | on | Ask GitHub for new versions, `off` disables it |
+
+## Updating
+
+```bash
+cd ~/npmcountdy
+git pull
+sudo docker compose up -d --build
+```
+
+## Updating from 0.0.x
+
+On the first start of 0.1.0 the tables for files, visitors and countries get a column for the client
+type. Older rows have none, so the bot switch only applies to data from the update on there, and failed
+requests are recorded from then on. The UI points this out. The history (hourly figures) always had the client type.
 
 ## Real visitor IP behind Cloudflare
 

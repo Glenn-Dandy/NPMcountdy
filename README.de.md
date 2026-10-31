@@ -2,11 +2,11 @@
 
 [English](README.md) · **Deutsch**
 
-Version 0.0.2
+Version 0.1.0
 
 Zeigt, wie viele Daten der Nginx Proxy Manager (NPM) ausgeliefert hat: pro Domain, pro Bereich
 (z. B. `/mapdata/` bei BoatSpeedy), pro Datei, pro Besucher, nach Tageszeit und nach Client-Art
-(Browser, BoatSpeedy-App, Nextcloud-Clients, Bots) und nach Ländern.
+(Browser, BoatSpeedy-App, Nextcloud-Clients, Bots), nach Ländern und nach Anbietern (Netz der Besucher-IP).
 
 - Liest `/opt/data/logs/proxy-host-*_access.log` des NPM nur mit (read-only), jede Minute.
 - Speichert die Zahlen in `./data/npmcountdy.db` (SQLite). Die Stundenwerte bleiben dauerhaft,
@@ -18,12 +18,24 @@ Zeigt, wie viele Daten der Nginx Proxy Manager (NPM) ausgeliefert hat: pro Domai
   nicht erreichbar, kommen dieselben Daten über [jsDelivr](https://www.jsdelivr.com/package/npm/@ip-location-db/dbip-country-mmdb).
   Klappt beides nicht, kann man die Datei auch von Hand als `./data/dbip-country-lite.mmdb` ablegen.
   Die Besucher-IPs verlassen dabei den Server nicht, nachgeschlagen wird nur lokal.
+- Anbieter kommen aus [DB-IP IP to ASN Lite](https://db-ip.com/db/download/ip-to-asn-lite) (CC BY 4.0),
+  genauso geladen und erneuert wie die Länder, Ersatz ebenfalls über jsDelivr, von Hand als
+  `./data/dbip-asn-lite.mmdb`.
 - Kommt die Länderdatenbank erst später, werden die Länder nachträglich zugeordnet, soweit die
   Besucher-IPs noch gespeichert sind (`DETAIL_DAYS`).
 - Die Weltkarte (`app/static/world.json`) stammt aus [Natural Earth](https://www.naturalearthdata.com/)
   (gemeinfrei) und wird mit `tools/make_world.py` erzeugt, Anleitung im Kopf der Datei.
 - Oberfläche auf Englisch und Deutsch. Sie richtet sich nach der Browsersprache, umschalten
   geht unten im Menü links, die Wahl merkt sich der Browser.
+- Kennzahlen mit Vergleich zum gleich langen Zeitraum davor, Spitzenlast ins Internet in Mbit/s
+  (Stundenmittel), Jahresansicht nach Wochen oder Monaten.
+- Schalter „Bots und Scanner mitzählen“ im Menü (Standard: an). Ausgeschaltet fehlen sie in allen Zahlen.
+- Fehlerhafte Anfragen (4xx, 5xx) je Pfad und Statuscode unter Verteilung, z. B. fehlende Kartenkacheln.
+- Tabellen lassen sich sortieren und durchsuchen, ein Klick auf eine Besucher-IP zeigt Domains,
+  Client-Arten und Verlauf. Tooltips gehen auch per Antippen auf dem Handy.
+- Seite „Über“ mit Status, Feedback-Links und Update-Prüfung: Der Server fragt alle 12 Stunden bei
+  GitHub nach dem höchsten Versions-Tag `vX.Y.Z` (Tags mit Zusatz wie `-dev` zählen nicht). Gibt es
+  eine neuere Version, steht das unten auf jeder Seite.
 - Nur Python-Standardbibliothek, keine Zusatzpakete.
 
 ## Betrieb auf dem NPM (<NPM-IP>)
@@ -38,12 +50,13 @@ Oberfläche: `http://<NPM-IP>:7881` mit den Unterseiten
 | Adresse | Inhalt |
 |---|---|
 | `/` | Übersicht: Kennzahlen, Verlauf, Domains, Client-Arten, wichtigste Länder |
-| `/verteilung` | Bereiche, Tageszeit, Antworten, LAN oder Internet |
+| `/verteilung` | Bereiche, Tageszeit, Antworten, LAN oder Internet, fehlerhafte Anfragen |
 | `/laender` | Weltkarte und alle Länder, `/laender?land=DE` zeigt ein Land im Detail |
-| `/besucher` | größte Besucher-IPs mit Land |
+| `/besucher` | Anbieter und Besucher-IPs mit Land, Anbieter und Details |
 | `/dateien` | größte Dateien und Pfade |
+| `/ueber` | Version, Status, Quellen und Lizenzen |
 
-Die englischen Adressen (`/traffic`, `/countries?country=DE`, `/visitors`, `/files`) gehen genauso.
+Die englischen Adressen (`/traffic`, `/countries?country=DE`, `/visitors`, `/files`, `/about`) gehen genauso.
 
 Keine eigene Anmeldung. Nur im LAN betreiben. Als `traffic.example.com` über den NPM:
 
@@ -63,6 +76,24 @@ Keine eigene Anmeldung. Nur im LAN betreiben. Als `traffic.example.com` über de
 | `CLEAR` | on | Daten einer Domain in der Oberfläche löschen, `off` schaltet das ab |
 | `GEOIP` | on | Länderzuordnung, `off` schaltet sie ab |
 | `GEOIP_URL` | leer | eigene Adresse für die MMDB-Datei (auch `.gz`), leer: DB-IP des aktuellen Monats |
+| `ASN` | on | Anbieterzuordnung, `off` schaltet sie ab |
+| `ASN_URL` | leer | eigene Adresse für die Anbieter-MMDB, leer: DB-IP des aktuellen Monats |
+| `UPDATE_CHECK` | on | bei GitHub nach neuen Versionen fragen, `off` schaltet das ab |
+
+## Update
+
+```bash
+cd ~/npmcountdy
+git pull
+sudo docker compose up -d --build
+```
+
+## Update von 0.0.x
+
+Beim ersten Start von 0.1.0 bekommen die Tabellen für Dateien, Besucher und Länder eine Spalte für
+die Client-Art. Ältere Zeilen haben keine, deshalb wirkt der Bot-Schalter dort erst für Daten ab dem
+Update, und fehlerhafte Anfragen werden erst ab dann erfasst. Die Oberfläche weist darauf hin.
+Der Verlauf (Stundenwerte) kannte die Client-Art schon immer.
 
 ## Echte Besucher-IP hinter Cloudflare
 

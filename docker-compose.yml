@@ -14,6 +14,8 @@ services:
       DETAIL_DAYS: "90"    # days that files and visitor IPs are kept
       CLEAR: "on"          # allow deleting a domain's data in the UI ("off" disables it)
       GEOIP: "on"          # countries for IPs, downloads the free DB-IP database monthly ("off" disables it)
+      ASN: "on"            # providers for IPs, also from DB-IP, monthly ("off" disables it)
+      UPDATE_CHECK: "on"   # ask GitHub every 12 hours for a newer version ("off" disables it)
     volumes:
       - ${NPM_LOGS:-/opt/data/logs}:/logs:ro
       - ./data:/data

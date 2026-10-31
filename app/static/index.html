@@ -24,6 +24,7 @@
     <a href="countries" data-page="geo" data-i18n="page_geo">Countries</a>
     <a href="visitors" data-page="visitors" data-i18n="page_visitors">Visitors</a>
     <a href="files" data-page="paths" data-i18n="page_paths">Files and paths</a>
+    <a href="about" data-page="about" data-i18n="page_about">About</a>
   </nav>
 
   <div class="side-group">
@@ -51,6 +52,12 @@
   </div>
 
   <div class="side-group">
+    <p class="side-label" data-i18n="filter">Filter</p>
+    <label class="switch"><input type="checkbox" id="bots" checked><span class="knob" aria-hidden="true"></span><span data-i18n="bots_label">Include bots and scanners</span></label>
+    <p class="side-note" id="bots-note" hidden></p>
+  </div>
+
+  <div class="side-group">
     <p class="side-label" data-i18n="language">Language</p>
     <div class="lang" id="lang" role="group" data-i18n-aria="language" aria-label="Language">
       <button data-lang="en" lang="en">English</button>
@@ -64,15 +71,21 @@
   <section class="page" data-page="overview">
     <h2 class="page-title" data-i18n="page_overview">Overview</h2>
     <div class="kpis">
-      <div class="kpi"><span class="label" data-i18n="kpi_bytes">Data volume</span><span class="value" id="k-bytes">…</span><span class="hint" id="k-bytes-day"></span></div>
-      <div class="kpi"><span class="label" data-i18n="kpi_requests">Requests</span><span class="value" id="k-req">…</span><span class="hint" id="k-req-avg"></span></div>
-      <div class="kpi"><span class="label" data-i18n="kpi_internet">To the internet</span><span class="value" id="k-inet">…</span><span class="hint" id="k-inet-share"></span></div>
-      <div class="kpi"><span class="label" data-i18n="kpi_visitors">Visitor IPs</span><span class="value" id="k-vis">…</span><span class="hint" data-i18n="kpi_visitors_hint">distinct addresses</span></div>
+      <div class="kpi"><span class="label" data-i18n="kpi_bytes">Data volume</span><span class="value" id="k-bytes">…</span><span class="hint" id="k-bytes-day"></span><span class="delta" id="k-bytes-d"></span></div>
+      <div class="kpi"><span class="label" data-i18n="kpi_requests">Requests</span><span class="value" id="k-req">…</span><span class="hint" id="k-req-avg"></span><span class="delta" id="k-req-d"></span></div>
+      <div class="kpi"><span class="label" data-i18n="kpi_internet">To the internet</span><span class="value" id="k-inet">…</span><span class="hint" id="k-inet-share"></span><span class="delta" id="k-inet-d"></span></div>
+      <div class="kpi" data-i18n-tip="kpi_peak_tip"><span class="label" data-i18n="kpi_peak">Peak load</span><span class="value" id="k-peak">…</span><span class="hint" id="k-peak-when"></span><span class="delta" id="k-peak-d"></span></div>
+      <div class="kpi"><span class="label" data-i18n="kpi_visitors">Visitor IPs</span><span class="value" id="k-vis">…</span><span class="hint" data-i18n="kpi_visitors_hint">distinct addresses</span><span class="delta" id="k-vis-d"></span></div>
     </div>
     <section class="card wide">
       <div class="card-head">
         <h3 id="chart-title">Data per day</h3>
         <div class="legend" id="legend"></div>
+        <div class="seg" id="step" role="group" data-i18n-aria="step_label" aria-label="Chart columns" hidden>
+          <button data-step="day" data-i18n="step_day">Days</button>
+          <button data-step="week" data-i18n="step_week">Weeks</button>
+          <button data-step="month" data-i18n="step_month">Months</button>
+        </div>
       </div>
       <div class="chart" id="chart"></div>
     </section>
@@ -91,6 +104,11 @@
       <section class="card"><h3 data-i18n="statuses">Responses</h3><div class="bars" id="b-status"></div></section>
       <section class="card"><h3 data-i18n="nets">LAN or internet</h3><div class="bars" id="b-nets"></div></section>
     </div>
+    <section class="card wide">
+      <h3 data-i18n="errors">Failed requests</h3>
+      <p class="note top" id="errors-note"></p>
+      <div id="t-errors"></div>
+    </section>
   </section>
 
   <section class="page" data-page="geo" hidden>
@@ -114,12 +132,68 @@
 
   <section class="page" data-page="visitors" hidden>
     <h2 class="page-title" data-i18n="page_visitors">Visitors</h2>
-    <section class="card wide"><h3 data-i18n="top_visitors">Top visitors</h3><div class="table-wrap"><table id="t-clients"></table></div></section>
+    <section class="card wide">
+      <h3 data-i18n="providers">Providers</h3>
+      <p class="note top" id="providers-note" data-i18n="providers_note"></p>
+      <div class="bars cols" id="b-providers"></div>
+    </section>
+    <section class="card wide" id="visitors-card">
+      <h3 data-i18n="top_visitors">Visitors</h3>
+      <p class="note top" data-i18n="visitors_note">Click an address for details.</p>
+      <div id="t-clients"></div>
+    </section>
   </section>
 
   <section class="page" data-page="paths" hidden>
     <h2 class="page-title" data-i18n="page_paths">Files and paths</h2>
-    <section class="card wide"><h3 data-i18n="top_paths">Largest files and paths</h3><div class="table-wrap"><table id="t-paths"></table></div></section>
+    <section class="card wide"><h3 data-i18n="top_paths">Largest files and paths</h3><div id="t-paths"></div></section>
+  </section>
+
+  <section class="page" data-page="about" hidden>
+    <h2 class="page-title" data-i18n="page_about">About</h2>
+    <section class="card wide about">
+      <div class="about-head">
+        <img src="icon.svg" alt="" width="72" height="72">
+        <div>
+          <p class="about-name">NPMcountdy</p>
+          <p class="about-version" id="about-version"></p>
+          <p class="sub" data-i18n="tagline">Traffic served by Nginx Proxy Manager</p>
+        </div>
+      </div>
+      <p class="about-text" data-i18n="about_text"></p>
+    </section>
+    <div class="grid about-grid">
+      <section class="card">
+        <h3 data-i18n="update_section">Update</h3>
+        <div id="update-box"></div>
+      </section>
+      <section class="card">
+        <h3 data-i18n="about_feedback">Feedback</h3>
+        <div class="actions">
+          <a class="action" id="report-bug" target="_blank" rel="noopener"><span class="ico" aria-hidden="true">!</span><span data-i18n="report_bug">Report a bug</span></a>
+          <a class="action" id="request-feature" target="_blank" rel="noopener"><span class="ico" aria-hidden="true">+</span><span data-i18n="request_feature">Request a feature</span></a>
+        </div>
+      </section>
+      <section class="card">
+        <h3 data-i18n="about_project">Project</h3>
+        <div class="actions">
+          <a class="action repo-link" target="_blank" rel="noopener"><span class="ico" aria-hidden="true">★</span><span data-i18n="star_github">Star on GitHub</span></a>
+          <a class="action repo-link" target="_blank" rel="noopener"><span class="ico" aria-hidden="true">&lt;/&gt;</span><span data-i18n="view_source">View source</span></a>
+          <a class="action" href="https://paypal.me/GlennDandy" target="_blank" rel="noopener"><span class="ico heart" aria-hidden="true">♥</span><span data-i18n="support_project">Support the project</span></a>
+        </div>
+      </section>
+    </div>
+    <div class="grid two about-grid">
+      <section class="card"><h3 data-i18n="about_status">Status</h3><dl class="facts" id="about-status"></dl></section>
+      <section class="card"><h3 data-i18n="about_sources">Sources and licences</h3>
+        <ul class="sources">
+          <li><a href="https://db-ip.com" target="_blank" rel="noopener">IP Geolocation by DB-IP</a><br><span data-i18n="src_dbip"></span></li>
+          <li><a href="https://www.naturalearthdata.com/" target="_blank" rel="noopener">Natural Earth</a><br><span data-i18n="src_map"></span></li>
+          <li><span data-i18n="src_code"></span></li>
+        </ul>
+      </section>
+    </div>
+    <p class="about-copy">© Glenn-Dandy</p>
   </section>
 </main>
 

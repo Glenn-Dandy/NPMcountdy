@@ -14,14 +14,15 @@ import struct
 import threading
 import time
 import urllib.request
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from glob import glob
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from ipaddress import ip_address, ip_network
 from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo
 
-VERSION = "0.0.2"
+VERSION = "0.1.0"
+REPO = "https://github.com/Glenn-Dandy/NPMcountdy"
 LOG_DIR = os.environ.get("LOG_DIR", "/logs")
 DB_PATH = os.environ.get("DB_PATH", "/data/npmcountdy.db")
 PORT = int(os.environ.get("PORT", "7881"))
@@ -29,14 +30,21 @@ INTERVAL = int(os.environ.get("INTERVAL", "60"))
 DETAIL_DAYS = int(os.environ.get("DETAIL_DAYS", "90"))
 TZ = ZoneInfo(os.environ.get("TZ", "Europe/Berlin"))
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
-PAGES = {"", "traffic", "countries", "visitors", "files",  # sub pages, all serve index.html
-         "verteilung", "laender", "besucher", "dateien"}   # German addresses
-GEOIP = os.environ.get("GEOIP", "on").lower() not in ("off", "0", "false", "no")
-GEOIP_PATH = os.environ.get("GEOIP_PATH", os.path.join(os.path.dirname(DB_PATH), "dbip-country-lite.mmdb"))
-CLEAR = os.environ.get("CLEAR", "on").lower() not in ("off", "0", "false", "no")  # allow deleting a domain's data in the UI
-GEOIP_URL = os.environ.get("GEOIP_URL", "")  # empty: DB-IP Country Lite of the current month
-# the same DB-IP data via the npm CDN, in case download.db-ip.com cannot be reached
-GEOIP_MIRROR = "https://cdn.jsdelivr.net/npm/@ip-location-db/dbip-country-mmdb/dbip-country.mmdb"
+PAGES = {"", "traffic", "countries", "visitors", "files", "about",  # sub pages, all serve index.html
+         "verteilung", "laender", "besucher", "dateien", "ueber"}   # German addresses
+LIMIT = 500  # rows per table (visitors, files, errors) sent to the UI
+
+
+def switch(name, default="on"):
+    return os.environ.get(name, default).lower() not in ("off", "0", "false", "no")
+
+
+DATA_DIR = os.path.dirname(DB_PATH)
+GEOIP = switch("GEOIP")
+CLEAR = switch("CLEAR")  # allow deleting a domain's data in the UI
+ASN = switch("ASN")      # provider (autonomous system) of visitor IPs
+UPDATE_CHECK = switch("UPDATE_CHECK")  # ask GitHub for newer released versions
+BOT = "Bot/Scanner"      # client type that the UI can leave out
 
 # https://www.cloudflare.com/ips/ : if one of these is in the log, the real visitor IP is unknown
 CLOUDFLARE = [ip_network(n) for n in (
@@ -56,13 +64,23 @@ LINE_RE = re.compile(
 KIND_RULES = [
     ("BoatSpeedy-App", re.compile(r"^BoatSpeedy", re.I)),
     ("Nextcloud-Client", re.compile(r"Nextcloud-android|Nextcloud-iOS|mirall|DAVx5|davdroid|gvfs|davfs|ownCloud", re.I)),
-    ("Bot/Scanner", re.compile(r"bot|crawl|spider|scan|curl|wget|python|go-http|zgrab|masscan|nuclei|httpx|expanse|censys|palo ?alto|okhttp|java/|libwww|headless", re.I)),
+    (BOT, re.compile(r"bot|crawl|spider|scan|curl|wget|python|go-http|zgrab|masscan|nuclei|httpx|expanse|censys|palo ?alto|okhttp|java/|libwww|headless", re.I)),
     ("Browser", re.compile(r"Mozilla/.*(Chrome|Firefox|Safari|Edg)", re.I)),
 ]
 
 state_lock = threading.Lock()
 db_lock = threading.Lock()  # never ingest and delete at the same time, or deleted rows come back
 status = {"last_ingest": None, "last_lines": 0, "last_error": None}
+
+# Tables kept for DETAIL_DAYS. Version 0.0.x had no client type in them, see db_init().
+DETAIL_TABLES = {
+    "daily_paths": ("day TEXT, host TEXT, path TEXT, kind TEXT, bytes INTEGER, requests INTEGER, "
+                    "PRIMARY KEY (day, host, path, kind)", "day, host, path, '', bytes, requests"),
+    "daily_clients": ("day TEXT, host TEXT, client TEXT, net TEXT, kind TEXT, bytes INTEGER, requests INTEGER, "
+                      "PRIMARY KEY (day, host, client, kind)", "day, host, client, net, '', bytes, requests"),
+    "daily_countries": ("day TEXT, host TEXT, country TEXT, kind TEXT, bytes INTEGER, requests INTEGER, "
+                        "PRIMARY KEY (day, host, country, kind)", "day, host, country, '', bytes, requests"),
+}
 
 
 def db_connect():
@@ -73,7 +91,7 @@ def db_connect():
 
 
 def db_init():
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    os.makedirs(DATA_DIR, exist_ok=True)
     con = db_connect()
     con.executescript(
         """
@@ -82,25 +100,32 @@ def db_init():
             status TEXT, net TEXT, bytes INTEGER, requests INTEGER,
             PRIMARY KEY (ts, host, area, kind, status, net));
         CREATE INDEX IF NOT EXISTS hourly_day ON hourly (day);
-        CREATE TABLE IF NOT EXISTS daily_paths (
-            day TEXT, host TEXT, path TEXT, bytes INTEGER, requests INTEGER,
-            PRIMARY KEY (day, host, path));
-        CREATE TABLE IF NOT EXISTS daily_clients (
-            day TEXT, host TEXT, client TEXT, net TEXT, bytes INTEGER, requests INTEGER,
-            PRIMARY KEY (day, host, client));
-        CREATE TABLE IF NOT EXISTS daily_countries (
-            day TEXT, host TEXT, country TEXT, bytes INTEGER, requests INTEGER,
-            PRIMARY KEY (day, host, country));
+        CREATE TABLE IF NOT EXISTS daily_errors (
+            day TEXT, host TEXT, path TEXT, status TEXT, kind TEXT, requests INTEGER,
+            PRIMARY KEY (day, host, path, status, kind));
         CREATE TABLE IF NOT EXISTS files (
             base TEXT PRIMARY KEY, inode INTEGER, offset INTEGER, head TEXT);
         CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
         """
     )
+    today = datetime.now(TZ).strftime("%Y-%m-%d")
+    for table, (cols, copy) in DETAIL_TABLES.items():
+        have = [r[1] for r in con.execute(f"PRAGMA table_info({table})")]
+        if not have:
+            con.execute(f"CREATE TABLE {table} ({cols})")
+        elif "kind" not in have:
+            # database of version 0.0.x: add the client type, old rows get an empty one.
+            # detail_since tells the UI from when on bots and errors are known in these tables.
+            con.execute(f"ALTER TABLE {table} RENAME TO {table}_old")
+            con.execute(f"CREATE TABLE {table} ({cols})")
+            con.execute(f"INSERT INTO {table} SELECT {copy} FROM {table}_old")
+            con.execute(f"DROP TABLE {table}_old")
+            con.execute("INSERT OR IGNORE INTO meta VALUES ('detail_since', ?)", (today,))
     con.commit()
     con.close()
 
 
-# ---------- Countries for IP addresses (DB-IP Lite, CC BY 4.0) ----------
+# ---------- Countries and providers for IP addresses (DB-IP Lite, CC BY 4.0) ----------
 
 class MMDB:
     """Minimal reader for MaxMind DB files, enough for the DB-IP country database."""
@@ -191,15 +216,28 @@ class MMDB:
         return self.decode(self.data + node - self.nodes - 16)[0]
 
 
-geo = {"db": None, "mtime": None, "tried": 0, "error": None}
+# The same DB-IP data is also on the npm CDN, in case download.db-ip.com cannot be reached
+GEO = {
+    "country": {"on": GEOIP, "url": os.environ.get("GEOIP_URL", ""),
+                "path": os.environ.get("GEOIP_PATH", os.path.join(DATA_DIR, "dbip-country-lite.mmdb")),
+                "mirror": "https://cdn.jsdelivr.net/npm/@ip-location-db/dbip-country-mmdb/dbip-country.mmdb"},
+    "asn": {"on": ASN, "url": os.environ.get("ASN_URL", ""),
+            "path": os.environ.get("ASN_PATH", os.path.join(DATA_DIR, "dbip-asn-lite.mmdb")),
+            "mirror": "https://cdn.jsdelivr.net/npm/@ip-location-db/dbip-asn-mmdb/dbip-asn.mmdb"},
+}
+for _g in GEO.values():
+    _g.update(db=None, mtime=None, tried=0, error=None)
 country_cache = {}
+asn_cache = {}
 
 
-def geo_download():
+def geo_download(name):
+    """Fetches one DB-IP database (empty URL setting: the file of the current or previous month, then the mirror)."""
+    g = GEO[name]
     now = datetime.now(TZ)
     prev = now.replace(day=1) - timedelta(days=1)
-    urls = [GEOIP_URL] if GEOIP_URL else [
-        f"https://download.db-ip.com/free/dbip-country-lite-{m:%Y-%m}.mmdb.gz" for m in (now, prev)] + [GEOIP_MIRROR]
+    urls = [g["url"]] if g["url"] else [
+        f"https://download.db-ip.com/free/dbip-{name}-lite-{m:%Y-%m}.mmdb.gz" for m in (now, prev)] + [g["mirror"]]
     errors = []
     for url in urls:
         try:
@@ -208,9 +246,9 @@ def geo_download():
                 raw = r.read()
             buf = gzip.decompress(raw) if raw[:2] == b"\x1f\x8b" else raw
             MMDB(buf)  # validate first, then replace the old file
-            with open(GEOIP_PATH + ".tmp", "wb") as f:
+            with open(g["path"] + ".tmp", "wb") as f:
                 f.write(buf)
-            os.replace(GEOIP_PATH + ".tmp", GEOIP_PATH)
+            os.replace(g["path"] + ".tmp", g["path"])
             return
         except Exception as e:
             why = getattr(e, "reason", None) or e  # URLError wraps the actual cause
@@ -218,29 +256,39 @@ def geo_download():
     raise RuntimeError(" | ".join(errors))
 
 
-def geo_refresh():
-    """Downloads the country database if it is missing or older than 32 days (DB-IP renews it monthly)."""
-    if not GEOIP:
-        return
+def geo_refresh_one(name):
+    """Downloads a database if it is missing or older than 32 days (DB-IP renews them monthly)."""
+    g = GEO[name]
     try:
-        mtime = os.path.getmtime(GEOIP_PATH)
+        mtime = os.path.getmtime(g["path"])
     except OSError:
         mtime = None
-    if (mtime is None or time.time() - mtime > 32 * 86400) and time.time() - geo["tried"] > 600:
-        geo["tried"] = time.time()
+    if (mtime is None or time.time() - mtime > 32 * 86400) and time.time() - g["tried"] > 600:
+        g["tried"] = time.time()
         try:
-            geo_download()
-            geo["error"] = None
-            mtime = os.path.getmtime(GEOIP_PATH)
+            geo_download(name)
+            g["error"] = None
+            mtime = os.path.getmtime(g["path"])
         except Exception as e:  # keep using the old file, retry in 10 minutes
-            geo["error"] = str(e)
-    if mtime is not None and mtime != geo["mtime"]:
-        with open(GEOIP_PATH, "rb") as f:
+            g["error"] = str(e)
+    if mtime is not None and mtime != g["mtime"]:
+        with open(g["path"], "rb") as f:
             db = MMDB(f.read())
         with state_lock:
-            geo.update(db=db, mtime=mtime)
-            country_cache.clear()
-        rebuild_countries()
+            g.update(db=db, mtime=mtime)
+            (country_cache if name == "country" else asn_cache).clear()
+        if name == "country":
+            rebuild_countries()
+
+
+def geo_refresh():
+    for name, g in GEO.items():
+        if not g["on"]:
+            continue
+        try:
+            geo_refresh_one(name)
+        except Exception as e:
+            g["error"] = f"{type(e).__name__}: {e}"
 
 
 def rebuild_countries():
@@ -249,12 +297,21 @@ def rebuild_countries():
     first = con.execute("SELECT MIN(day) FROM daily_clients").fetchone()[0]
     if first and con.execute("SELECT 1 FROM daily_countries WHERE country = '??' AND day >= ? LIMIT 1", (first,)).fetchone():
         agg = {}
-        for day, host, client, b, r in con.execute("SELECT day, host, client, bytes, requests FROM daily_clients"):
-            v = agg.setdefault((day, host, country_of(client)), [0, 0]); v[0] += b; v[1] += r
+        for day, host, client, kind, b, r in con.execute("SELECT day, host, client, kind, bytes, requests FROM daily_clients"):
+            v = agg.setdefault((day, host, country_of(client), kind), [0, 0]); v[0] += b; v[1] += r
         con.execute("DELETE FROM daily_countries WHERE day >= ?", (first,))
-        con.executemany("INSERT INTO daily_countries VALUES (?,?,?,?,?)", [k + tuple(v) for k, v in agg.items()])
+        con.executemany("INSERT INTO daily_countries VALUES (?,?,?,?,?,?)", [k + tuple(v) for k, v in agg.items()])
         con.commit()
     con.close()
+
+
+def public_ip(client):
+    """The address as ip_address, None if it is not one. IPv4 inside IPv6 is unwrapped."""
+    try:
+        ip = ip_address(client)
+    except ValueError:
+        return None
+    return ip.ipv4_mapped if ip.version == 6 and ip.ipv4_mapped else ip
 
 
 def country_of(client):
@@ -262,18 +319,15 @@ def country_of(client):
     cc = country_cache.get(client)
     if cc:
         return cc
-    try:
-        ip = ip_address(client)
-    except ValueError:
+    ip = public_ip(client)
+    if ip is None:
         return "??"
-    if ip.version == 6 and ip.ipv4_mapped:
-        ip = ip.ipv4_mapped
     if ip.is_private or ip.is_loopback:
         cc = "LAN"
     elif any(ip in n for n in CLOUDFLARE):
         cc = "CLOUDFLARE"
     else:
-        db = geo["db"]
+        db = GEO["country"]["db"]
         if db is None:
             return "??"
         rec = db.lookup(ip) or {}
@@ -282,6 +336,26 @@ def country_of(client):
         country_cache.clear()
     country_cache[client] = cc
     return cc
+
+
+def asn_of(client):
+    """(AS number, organisation) of the network the address belongs to, or None."""
+    if client in asn_cache:
+        return asn_cache[client]
+    db = GEO["asn"]["db"]
+    ip = public_ip(client)
+    if db is None or ip is None:
+        return None
+    res = None
+    if not (ip.is_private or ip.is_loopback):
+        rec = db.lookup(ip) or {}
+        num = rec.get("autonomous_system_number")
+        if num:
+            res = (num, rec.get("autonomous_system_organization") or f"AS{num}")
+    if len(asn_cache) > 200000:
+        asn_cache.clear()
+    asn_cache[client] = res
+    return res
 
 
 # ---------- Parsing a log line ----------
@@ -333,46 +407,48 @@ def parse_line(line):
     return {
         "ts": ts, "day": local.strftime("%Y-%m-%d"), "hod": local.hour,
         "host": m["host"].lower(), "area": area, "path": short,
-        "kind": classify(m["ua"]), "status": code[0] + "xx",
+        "kind": classify(m["ua"]), "code": code, "status": code[0] + "xx",
         "net": net_of(client), "client": client, "cc": country_of(client), "bytes": int(m["length"]),
     }
 
 
+def bump(table, key, size):
+    v = table.setdefault(key, [0, 0])
+    v[0] += size
+    v[1] += 1
+
+
+def upsert(con, table, rows, cols="bytes, requests"):
+    marks = ",".join("?" * len(rows[0])) if rows else ""
+    sets = ", ".join(f"{c} = {c} + excluded.{c}" for c in cols.split(", "))
+    con.executemany(f"INSERT INTO {table} VALUES ({marks}) ON CONFLICT DO UPDATE SET {sets}", rows)
+
+
 class Batch:
     def __init__(self):
-        self.hourly, self.paths, self.clients, self.countries, self.lines = {}, {}, {}, {}, 0
+        self.hourly, self.paths, self.clients, self.countries, self.errors, self.lines = {}, {}, {}, {}, {}, 0
 
     def add(self, line):
         r = parse_line(line)
         if not r:
             return
         self.lines += 1
-        k = (r["ts"], r["day"], r["hod"], r["host"], r["area"], r["kind"], r["status"], r["net"])
-        v = self.hourly.setdefault(k, [0, 0]); v[0] += r["bytes"]; v[1] += 1
-        k = (r["day"], r["host"], r["path"])
-        v = self.paths.setdefault(k, [0, 0]); v[0] += r["bytes"]; v[1] += 1
-        k = (r["day"], r["host"], r["client"], r["net"])
-        v = self.clients.setdefault(k, [0, 0]); v[0] += r["bytes"]; v[1] += 1
-        k = (r["day"], r["host"], r["cc"])
-        v = self.countries.setdefault(k, [0, 0]); v[0] += r["bytes"]; v[1] += 1
+        day, host, kind, size = r["day"], r["host"], r["kind"], r["bytes"]
+        bump(self.hourly, (r["ts"], day, r["hod"], host, r["area"], kind, r["status"], r["net"]), size)
+        bump(self.paths, (day, host, r["path"], kind), size)
+        bump(self.clients, (day, host, r["client"], r["net"], kind), size)
+        bump(self.countries, (day, host, r["cc"], kind), size)
+        if r["code"][0] in "45":
+            k = (day, host, r["path"], r["code"], kind)
+            self.errors[k] = self.errors.get(k, 0) + 1
 
     def flush(self, con):
-        con.executemany(
-            "INSERT INTO hourly VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO UPDATE SET "
-            "bytes = bytes + excluded.bytes, requests = requests + excluded.requests",
-            [k + tuple(v) for k, v in self.hourly.items()])
-        con.executemany(
-            "INSERT INTO daily_paths VALUES (?,?,?,?,?) ON CONFLICT DO UPDATE SET "
-            "bytes = bytes + excluded.bytes, requests = requests + excluded.requests",
-            [k + tuple(v) for k, v in self.paths.items()])
-        con.executemany(
-            "INSERT INTO daily_clients VALUES (?,?,?,?,?,?) ON CONFLICT DO UPDATE SET "
-            "bytes = bytes + excluded.bytes, requests = requests + excluded.requests",
-            [k + tuple(v) for k, v in self.clients.items()])
-        con.executemany(
-            "INSERT INTO daily_countries VALUES (?,?,?,?,?) ON CONFLICT DO UPDATE SET "
-            "bytes = bytes + excluded.bytes, requests = requests + excluded.requests",
-            [k + tuple(v) for k, v in self.countries.items()])
+        for table, rows in (("hourly", self.hourly), ("daily_paths", self.paths),
+                            ("daily_clients", self.clients), ("daily_countries", self.countries)):
+            if rows:
+                upsert(con, table, [k + tuple(v) for k, v in rows.items()])
+        if self.errors:
+            upsert(con, "daily_errors", [k + (v,) for k, v in self.errors.items()], "requests")
 
 
 # ---------- Reading log files, across rotations ----------
@@ -447,8 +523,8 @@ def ingest():
     if first_run:
         con.execute("INSERT OR REPLACE INTO meta VALUES ('backfilled', ?)", (str(int(time.time())),))
     cutoff = (datetime.now(TZ) - timedelta(days=DETAIL_DAYS)).strftime("%Y-%m-%d")
-    con.execute("DELETE FROM daily_paths WHERE day < ?", (cutoff,))
-    con.execute("DELETE FROM daily_clients WHERE day < ?", (cutoff,))
+    for table in ("daily_paths", "daily_clients", "daily_errors"):
+        con.execute(f"DELETE FROM {table} WHERE day < ?", (cutoff,))
     con.commit()
     con.close()
     return batch.lines
@@ -456,10 +532,7 @@ def ingest():
 
 def ingest_loop():
     while True:
-        try:
-            geo_refresh()
-        except Exception as e:
-            geo["error"] = f"{type(e).__name__}: {e}"
+        geo_refresh()
         try:
             with db_lock:
                 n = ingest()
@@ -471,43 +544,173 @@ def ingest_loop():
         time.sleep(INTERVAL)
 
 
+# ---------- Update check ----------
+# Only released versions count: Git tags vX.Y.Z. Tags with a suffix (v1.2.0-dev3) are ignored.
+
+TAGS_API = "https://api.github.com/repos/Glenn-Dandy/NPMcountdy/tags?per_page=100"
+RELEASE_TAG = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
+update = {"latest": None, "checked": None, "error": None, "tried": 0}
+
+
+def version_key(v):
+    return tuple(int(x) for x in v.split("."))
+
+
+def check_update():
+    update["tried"] = time.time()
+    try:
+        req = urllib.request.Request(TAGS_API, headers={
+            "User-Agent": f"NPMcountdy/{VERSION}", "Accept": "application/vnd.github+json"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            tags = json.load(r)
+        found = [tuple(map(int, m.groups())) for t in tags if (m := RELEASE_TAG.match(str(t.get("name", ""))))]
+        if not found:
+            raise ValueError("no version tags found")
+        with state_lock:
+            update.update(latest=".".join(map(str, max(found))), checked=int(time.time()), error=None)
+    except Exception as e:
+        why = getattr(e, "reason", None) or e
+        with state_lock:
+            update["error"] = f"{type(e).__name__}: {why}"
+
+
+def update_loop():
+    while True:
+        check_update()
+        time.sleep(3600 if update["error"] else 12 * 3600)  # after an error try again in an hour
+
+
+def update_info():
+    with state_lock:
+        u = dict(update)
+    latest = u["latest"]
+    return {"on": UPDATE_CHECK, "current": VERSION, "latest": latest,
+            "newer": bool(latest and version_key(latest) > version_key(VERSION)),
+            "url": f"{REPO}/releases/tag/v{latest}" if latest else f"{REPO}/tags",
+            "checked": u["checked"], "error": u["error"]}
+
+
+def update_now(q):
+    """Check on request from the about page, at most every 30 seconds."""
+    if UPDATE_CHECK and q.get("check") and time.time() - update["tried"] > 30:
+        check_update()
+    return update_info()
+
+
 # ---------- Queries for the UI ----------
 
-def summary(q):
-    days = max(1, min(int(q.get("days", ["7"])[0]), 3650))
-    host = q.get("host", [""])[0]
-    country = q.get("country", [""])[0].upper()[:10]
-    now = datetime.now(TZ)
-    start_day = (now - timedelta(days=days - 1)).strftime("%Y-%m-%d")
-    hourly_view = days <= 2
-    start_ts = int((now - timedelta(hours=47 if days == 2 else 23)).timestamp()) // 3600 * 3600
+def day_str(d):
+    return d.strftime("%Y-%m-%d")
 
-    where, args = ("ts >= ?", [start_ts]) if hourly_view else ("day >= ?", [start_day])
-    dwhere, dargs = "day >= ?", [start_day if not hourly_view else datetime.fromtimestamp(start_ts, TZ).strftime("%Y-%m-%d")]
-    if host:
-        where += " AND host = ?"; args.append(host)
-        dwhere += " AND host = ?"; dargs.append(host)
-    group = "area" if host else "host"
+
+class Period:
+    """Time range of a request: up to 2 days by hour, longer ones by day.
+    prev_* is the range of the same length right before it, for comparisons."""
+
+    def __init__(self, q):
+        self.days = max(1, min(int(q.get("days", ["7"])[0]), 3650))
+        self.host = q.get("host", [""])[0]
+        self.bots = q.get("bots", ["1"])[0] != "0"
+        self.now = now = datetime.now(TZ)
+        self.hourly = self.days <= 2
+        self.hours = 48 if self.days == 2 else 24
+        now_ts = int(now.timestamp()) // 3600 * 3600
+        start = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=self.days - 1)
+        self.start_day = day_str(start)
+        if self.hourly:
+            self.start_ts = now_ts - (self.hours - 1) * 3600
+            self.where, self.args = "ts >= ?", [self.start_ts]
+            self.detail_day = day_str(datetime.fromtimestamp(self.start_ts, TZ))
+            self.prev = ("ts >= ? AND ts < ?", [self.start_ts - self.hours * 3600, self.start_ts])
+            self.prev_day = day_str(datetime.fromtimestamp(self.start_ts - self.hours * 3600, TZ))
+        else:
+            self.where, self.args = "day >= ?", [self.start_day]
+            self.detail_day = self.start_day
+            # same length and the same time of day, so a running day is compared with a running day
+            self.prev = ("ts >= ? AND ts < ?", [int((start - timedelta(days=self.days)).timestamp()),
+                                                int((now - timedelta(days=self.days)).timestamp())])
+            self.prev_day = day_str(start - timedelta(days=self.days))
+        # the tables kept per day (files, visitors, countries, errors) start at detail_day
+        self.dwhere, self.dargs = "day >= ?", [self.detail_day]
+        extra, extra_args = "", []
+        if self.host:
+            extra, extra_args = " AND host = ?", [self.host]
+        if not self.bots:
+            extra += f" AND kind != '{BOT}'"
+        self.where += extra; self.args += extra_args
+        self.dwhere += extra; self.dargs += extra_args
+        self.prev = (self.prev[0] + extra, self.prev[1] + extra_args)
+        self.extra, self.extra_args = extra, extra_args
+
+
+def client_row(r):
+    a = asn_of(r[0])
+    return {"name": r[0], "net": r[1], "cc": country_of(r[0]), "asn": a[0] if a else None, "org": a[1] if a else "",
+            "bytes": r[2], "requests": r[3], "hosts": r[4], "kinds": [k for k in (r[5] or "").split(",") if k]}
+
+
+def buckets_for(p, step):
+    """Chart columns of a range of days: days, weeks (starting Monday) or months."""
+    def key(day):
+        if step == "week":
+            d = date.fromisoformat(day)
+            return (d - timedelta(days=d.weekday())).isoformat()
+        return day[:7] if step == "month" else day
+    order, ranges, of_day = [], {}, {}
+    for i in range(p.days):
+        day = day_str(p.now - timedelta(days=p.days - 1 - i))
+        k = key(day)
+        if k not in ranges:
+            order.append(k)
+            ranges[k] = [day, day]
+        ranges[k][1] = day
+        of_day[day] = len(order) - 1
+    return order, [ranges[k] for k in order], of_day
+
+
+def summary(q):
+    p = Period(q)
+    country = q.get("country", [""])[0].upper()[:10]
+    step = q.get("step", ["day"])[0]
+    if p.hourly or step not in ("week", "month"):
+        step = "day"
+    where, args, dwhere, dargs = p.where, p.args, p.dwhere, p.dargs
+    group = "area" if p.host else "host"
 
     con = db_connect()
     one = lambda sql, a: con.execute(sql, a).fetchall()
 
-    total = one(f"SELECT COALESCE(SUM(bytes),0), COALESCE(SUM(requests),0) FROM hourly WHERE {where}", args)[0]
-    inet = one(f"SELECT COALESCE(SUM(bytes),0) FROM hourly WHERE {where} AND net='Internet'", args)[0][0]
-    bucket = "ts" if hourly_view else "day"
-    series_rows = one(f"SELECT {bucket}, {group}, SUM(bytes) FROM hourly WHERE {where} GROUP BY 1, 2", args)
+    def totals(w, a):
+        r = one(f"SELECT COALESCE(SUM(bytes),0), COALESCE(SUM(requests),0), "
+                f"COALESCE(SUM(CASE WHEN net = 'Internet' THEN bytes END),0) FROM hourly WHERE {w}", a)[0]
+        top = one(f"SELECT ts, SUM(bytes) FROM hourly WHERE {w} AND net = 'Internet' "
+                  "GROUP BY ts ORDER BY 2 DESC LIMIT 1", a)
+        return {"bytes": r[0], "requests": r[1], "internet": r[2],
+                "peak": {"ts": top[0][0], "bytes": top[0][1]} if top else None}
 
-    if hourly_view:
-        buckets = list(range(start_ts, int(now.timestamp()) // 3600 * 3600 + 1, 3600))
+    total = totals(where, args)
+    first = one(f"SELECT MIN(day) FROM hourly WHERE 1 = 1{p.extra}", p.extra_args)[0][0]
+    prev = None
+    if first and first <= p.prev_day:  # only compare with a range that is fully recorded
+        prev = totals(*p.prev)
+        prev["visitors"] = None
+        keep_from = day_str(p.now - timedelta(days=DETAIL_DAYS - 1))
+        if not p.hourly and p.prev_day >= keep_from:
+            prev["visitors"] = one(f"SELECT COUNT(DISTINCT client) FROM daily_clients WHERE day >= ? AND day < ?{p.extra}",
+                                   [p.prev_day, p.start_day] + p.extra_args)[0][0]
+
+    if p.hourly:
+        buckets = list(range(p.start_ts, int(p.now.timestamp()) // 3600 * 3600 + 1, 3600))
         labels = [datetime.fromtimestamp(b, TZ).strftime("%H:00") for b in buckets]
+        index, ranges = {b: i for i, b in enumerate(buckets)}, None
+        series_rows = one(f"SELECT ts, {group}, SUM(bytes) FROM hourly WHERE {where} GROUP BY 1, 2", args)
     else:
-        buckets = [(now - timedelta(days=days - 1 - i)).strftime("%Y-%m-%d") for i in range(days)]
-        labels = buckets
-    idx = {b: i for i, b in enumerate(buckets)}
+        labels, ranges, index = buckets_for(p, step)
+        series_rows = one(f"SELECT day, {group}, SUM(bytes) FROM hourly WHERE {where} GROUP BY 1, 2", args)
     series = {}
     for b, g, v in series_rows:
-        if b in idx:
-            series.setdefault(g, [0] * len(buckets))[idx[b]] += v
+        if b in index:
+            series.setdefault(g, [0] * len(labels))[index[b]] += v
 
     def breakdown(col, limit=50):
         return [{"name": r[0], "bytes": r[1], "requests": r[2]} for r in one(
@@ -520,36 +723,49 @@ def summary(q):
 
     paths = [{"host": r[0], "name": r[1], "bytes": r[2], "requests": r[3]} for r in one(
         f"SELECT host, path, SUM(bytes), SUM(requests) FROM daily_paths WHERE {dwhere} "
-        "GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 50", dargs)]
-    client_sql = (f"SELECT client, net, SUM(bytes), SUM(requests), COUNT(DISTINCT host) FROM daily_clients "
-                  f"WHERE {dwhere} GROUP BY 1, 2 ORDER BY 3 DESC")
-    client_row = lambda r: {"name": r[0], "net": r[1], "cc": country_of(r[0]), "bytes": r[2], "requests": r[3], "hosts": r[4]}
-    clients = [client_row(r) for r in one(client_sql + " LIMIT 50", dargs)]
-    visitors = one(f"SELECT COUNT(DISTINCT client) FROM daily_clients WHERE {dwhere}", dargs)[0][0]
+        f"GROUP BY 1, 2 ORDER BY 3 DESC LIMIT {LIMIT}", dargs)]
+    errors = [{"host": r[0], "name": r[1], "status": r[2], "requests": r[3]} for r in one(
+        f"SELECT host, path, status, SUM(requests) FROM daily_errors WHERE {dwhere} "
+        f"GROUP BY 1, 2, 3 ORDER BY 4 DESC LIMIT {LIMIT}", dargs)]
+    clients = [client_row(r) for r in one(
+        "SELECT client, net, SUM(bytes), SUM(requests), COUNT(DISTINCT host), GROUP_CONCAT(DISTINCT kind) "
+        f"FROM daily_clients WHERE {dwhere} GROUP BY 1, 2 ORDER BY 3 DESC", dargs)]
+
+    providers = []
+    if GEO["asn"]["db"] is not None:
+        by = {}
+        for c in clients:
+            k = c["asn"] or ("LAN" if c["net"] == "LAN" else "??")
+            v = by.setdefault(k, {"name": c["org"] or k, "asn": c["asn"], "bytes": 0, "requests": 0, "visitors": 0})
+            v["bytes"] += c["bytes"]; v["requests"] += c["requests"]; v["visitors"] += 1
+        providers = sorted(by.values(), key=lambda v: -v["bytes"])[:50]
+
+    total["visitors"] = len(clients)
     result = {
-        "days": days, "host": host, "hourly": hourly_view, "group": group,
-        "total": {"bytes": total[0], "requests": total[1], "internet": inet, "visitors": visitors},
-        "labels": labels,
+        "days": p.days, "host": p.host, "bots": p.bots, "hourly": p.hourly, "step": "hour" if p.hourly else step,
+        "group": group, "start_day": p.detail_day,
+        "total": total, "prev": prev,
+        "labels": labels, "ranges": ranges,
+        "weeks": [date.fromisoformat(k).isocalendar()[1] for k in labels] if step == "week" and not p.hourly else None,
         "series": [{"name": g, "values": v} for g, v in sorted(series.items(), key=lambda x: -sum(x[1]))],
         "hosts": breakdown("host"), "kinds": breakdown("kind"),
         "areas": [{"name": r[1], "sub": r[0], "bytes": r[2], "requests": r[3]} for r in one(
             f"SELECT host, area, SUM(bytes), SUM(requests) FROM hourly WHERE {where} "
             "GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 25", args)],
         "statuses": breakdown("status"), "nets": breakdown("net"),
-        "hod": hod, "paths": paths, "clients": clients,
+        "hod": hod, "paths": paths, "errors": errors, "clients": clients[:LIMIT], "providers": providers,
         "countries": [{"name": r[0], "bytes": r[1], "requests": r[2]} for r in one(
             f"SELECT country, SUM(bytes), SUM(requests) FROM daily_countries WHERE {dwhere} "
             "GROUP BY 1 ORDER BY 2 DESC LIMIT 300", dargs)],
     }
     if country:
         cargs = dargs + [country]
-        first_day = dargs[0]
         day_list = []
-        d = datetime.strptime(first_day, "%Y-%m-%d").date()
-        while d <= now.date():
+        d = date.fromisoformat(p.detail_day)
+        while d <= p.now.date():
             day_list.append(d.isoformat()); d += timedelta(days=1)
         per_day = dict(one(f"SELECT day, SUM(bytes) FROM daily_countries WHERE {dwhere} AND country = ? GROUP BY 1", cargs))
-        matching = [c for c in map(client_row, one(client_sql, dargs)) if c["cc"] == country]
+        matching = [c for c in clients if c["cc"] == country]
         result["country"] = {
             "code": country,
             "hosts": [{"name": r[0], "bytes": r[1], "requests": r[2]} for r in one(
@@ -562,13 +778,40 @@ def summary(q):
     return result
 
 
+def client_detail(q):
+    """Everything stored about one visitor IP in the time range: domains, client types, data per day."""
+    p = Period(q)
+    ip = q.get("ip", [""])[0].strip()[:64]
+    con = db_connect()
+    rows = con.execute(f"SELECT day, host, kind, SUM(bytes), SUM(requests) FROM daily_clients "
+                       f"WHERE client = ? AND {p.dwhere} GROUP BY 1, 2, 3", [ip] + p.dargs).fetchall()
+    con.close()
+    hosts, kinds, per_day = {}, {}, {}
+    for day, host, kind, b, r in rows:
+        for table, k in ((hosts, host), (kinds, kind)):
+            v = table.setdefault(k, {"name": k, "bytes": 0, "requests": 0})
+            v["bytes"] += b; v["requests"] += r
+        per_day[day] = per_day.get(day, 0) + b
+    day_list, d = [], date.fromisoformat(p.detail_day)
+    while d <= p.now.date():
+        day_list.append(d.isoformat()); d += timedelta(days=1)
+    a = asn_of(ip)
+    by_bytes = lambda t: sorted(t.values(), key=lambda v: -v["bytes"])
+    return {
+        "ip": ip, "cc": country_of(ip), "asn": a[0] if a else None, "org": a[1] if a else "",
+        "hosts": by_bytes(hosts), "kinds": [k for k in by_bytes(kinds) if k["name"]],
+        "days": [{"day": x, "bytes": per_day.get(x, 0)} for x in day_list],
+        "active": sum(1 for x in day_list if x in per_day), "last": max(per_day) if per_day else None,
+    }
+
+
 def clear_host(host):
     """Deletes all stored figures of a domain. The NPM log files stay untouched."""
     with db_lock:
         con = db_connect()
         b, r = con.execute("SELECT COALESCE(SUM(bytes),0), COALESCE(SUM(requests),0) FROM hourly WHERE host = ?",
                            (host,)).fetchone()
-        for table in ("hourly", "daily_paths", "daily_clients", "daily_countries"):
+        for table in ("hourly", "daily_paths", "daily_clients", "daily_countries", "daily_errors"):
             con.execute(f"DELETE FROM {table} WHERE host = ?", (host,))
         con.commit()
         con.close()
@@ -579,12 +822,19 @@ def meta():
     con = db_connect()
     hosts = [r[0] for r in con.execute("SELECT host FROM hourly GROUP BY host ORDER BY SUM(bytes) DESC")]
     first = con.execute("SELECT MIN(day) FROM hourly").fetchone()[0]
+    since = con.execute("SELECT value FROM meta WHERE key = 'detail_since'").fetchone()
     con.close()
+    size = sum(os.path.getsize(DB_PATH + x) for x in ("", "-wal") if os.path.exists(DB_PATH + x))
     with state_lock:
         s = dict(status)
-    geo_info = {"geo": GEOIP, "geo_ready": geo["db"] is not None, "geo_error": geo["error"],
-                "geo_date": datetime.fromtimestamp(geo["mtime"], TZ).strftime("%Y-%m-%d") if geo["mtime"] else None}
-    return {"version": VERSION, "hosts": hosts, "first_day": first, "detail_days": DETAIL_DAYS, "clear": CLEAR, **s, **geo_info}
+    out = {"version": VERSION, "repo": REPO, "hosts": hosts, "first_day": first, "detail_days": DETAIL_DAYS,
+           "detail_since": since[0] if since else None, "clear": CLEAR, "interval": INTERVAL, "db_size": size,
+           "update": update_info(), **s}
+    for name, prefix in (("country", "geo"), ("asn", "asn")):
+        g = GEO[name]
+        out.update({prefix: g["on"], prefix + "_ready": g["db"] is not None, prefix + "_error": g["error"],
+                    prefix + "_date": datetime.fromtimestamp(g["mtime"], TZ).strftime("%Y-%m-%d") if g["mtime"] else None})
+    return out
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -602,13 +852,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         u = urlparse(self.path)
-        try:
-            if u.path.endswith("/api/summary"):
-                return self.send(200, json.dumps(summary(parse_qs(u.query))).encode(), "application/json")
-            if u.path.endswith("/api/meta"):
-                return self.send(200, json.dumps(meta()).encode(), "application/json")
-        except Exception as e:
-            return self.send(500, json.dumps({"error": str(e)}).encode(), "application/json")
+        api = {"/api/summary": lambda: summary(parse_qs(u.query)), "/api/client": lambda: client_detail(parse_qs(u.query)),
+               "/api/meta": meta, "/api/update": lambda: update_now(parse_qs(u.query))}
+        for path, fn in api.items():
+            if u.path.endswith(path):
+                try:
+                    return self.send(200, json.dumps(fn()).encode(), "application/json")
+                except Exception as e:
+                    return self.send(500, json.dumps({"error": str(e)}).encode(), "application/json")
         name = "index.html" if u.path.strip("/") in PAGES else os.path.basename(u.path)
         path = os.path.join(STATIC_DIR, name)
         if not os.path.isfile(path):
@@ -618,7 +869,6 @@ class Handler(BaseHTTPRequestHandler):
             name.rsplit(".", 1)[-1], "application/octet-stream")
         with open(path, "rb") as f:
             self.send(200, f.read(), ctype + "; charset=utf-8")
-
 
     def do_POST(self):
         err = lambda code, msg: self.send(code, json.dumps({"error": msg}).encode(), "application/json")
@@ -646,6 +896,8 @@ def main():
     print(f"NPMcountdy {VERSION}, Port {PORT}")
     db_init()
     threading.Thread(target=ingest_loop, daemon=True).start()
+    if UPDATE_CHECK:
+        threading.Thread(target=update_loop, daemon=True).start()
     ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
 
 
