@@ -21,7 +21,7 @@ from ipaddress import ip_address, ip_network
 from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo
 
-VERSION = "0.1.1"
+VERSION = "0.1.2"
 REPO = "https://github.com/Glenn-Dandy/NPMcountdy"
 LOG_DIR = os.environ.get("LOG_DIR", "/logs")
 DB_PATH = os.environ.get("DB_PATH", "/data/npmcountdy.db")

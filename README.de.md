@@ -2,7 +2,7 @@
 
 [English](README.md) · **Deutsch**
 
-Version 0.1.1
+Version 0.1.2
 
 Zeigt, wie viele Daten der Nginx Proxy Manager (NPM) ausgeliefert hat: pro Domain, pro Bereich
 (z. B. `/mapdata/` bei BoatSpeedy), pro Datei, pro Besucher, nach Tageszeit und nach Client-Art
