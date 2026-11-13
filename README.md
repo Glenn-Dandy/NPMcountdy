@@ -7,6 +7,12 @@ Version 0.1.4
 Traffic dashboard for Nginx Proxy Manager (NPM). Reads its access logs and shows data and
 requests per domain, path, visitor IP, country, provider and client type.
 
+## Requirements
+
+Docker with the Compose plugin, and git. Check: `docker compose version`
+
+Ubuntu/Debian: `sudo apt install docker.io docker-compose-v2 git`
+
 ## Installation
 
 ```bash
