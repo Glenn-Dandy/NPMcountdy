@@ -21,7 +21,7 @@ from ipaddress import ip_address, ip_network
 from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo
 
-VERSION = "0.1.3"
+VERSION = "0.1.4"
 REPO = "https://github.com/Glenn-Dandy/NPMcountdy"
 LOG_DIR = os.environ.get("LOG_DIR", "/logs")
 DB_PATH = os.environ.get("DB_PATH", "/data/npmcountdy.db")
@@ -81,6 +81,7 @@ DETAIL_TABLES = {
     "daily_countries": ("day TEXT, host TEXT, country TEXT, kind TEXT, bytes INTEGER, requests INTEGER, "
                         "PRIMARY KEY (day, host, country, kind)", "day, host, country, '', bytes, requests"),
 }
+PC_LIMIT = 100  # visitor IPs per expanded path, area or failed request
 
 
 def db_connect():
@@ -154,6 +155,10 @@ def db_init():
         CREATE TABLE IF NOT EXISTS daily_errors (
             day TEXT, host TEXT, path TEXT, status TEXT, kind TEXT, requests INTEGER,
             PRIMARY KEY (day, host, path, status, kind));
+        CREATE TABLE IF NOT EXISTS daily_path_clients (
+            day TEXT, host TEXT, area TEXT, path TEXT, code TEXT, client TEXT, net TEXT, kind TEXT,
+            bytes INTEGER, requests INTEGER,
+            PRIMARY KEY (day, host, area, path, code, client, kind));
         CREATE TABLE IF NOT EXISTS files (
             base TEXT PRIMARY KEY, inode INTEGER, offset INTEGER, head TEXT);
         CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
@@ -478,8 +483,13 @@ def upsert(con, table, rows, cols="bytes, requests"):
 
 
 class Batch:
-    def __init__(self):
-        self.hourly, self.paths, self.clients, self.countries, self.errors, self.lines = {}, {}, {}, {}, {}, 0
+    """Figures of the lines read in one run. only_pc: only visitor IPs per path (catching up old logs).
+    Large runs write their rows in between, the commit at the end of ingest() still covers everything."""
+
+    def __init__(self, con, only_pc=False):
+        self.con, self.only_pc = con, only_pc
+        self.hourly, self.paths, self.clients, self.countries, self.errors, self.pclients = {}, {}, {}, {}, {}, {}
+        self.lines, self.days = 0, set()
         self.base, self.hosts = None, {}  # log file being read, domain -> its log file
 
     def add(self, line):
@@ -488,6 +498,12 @@ class Batch:
             return
         self.lines += 1
         day, host, kind, size = r["day"], r["host"], r["kind"], r["bytes"]
+        bump(self.pclients, (day, host, r["area"], r["path"], r["code"], r["client"], r["net"], kind), size)
+        if len(self.pclients) + len(self.clients) > 200000:
+            self.write_rows()
+        if self.only_pc:
+            self.days.add(day)
+            return
         self.hosts[host] = self.base
         bump(self.hourly, (r["ts"], day, r["hod"], host, r["area"], kind, r["status"], r["net"]), size)
         bump(self.paths, (day, host, r["path"], kind), size)
@@ -497,13 +513,19 @@ class Batch:
             k = (day, host, r["path"], r["code"], kind)
             self.errors[k] = self.errors.get(k, 0) + 1
 
-    def flush(self, con):
-        for table, rows in (("hourly", self.hourly), ("daily_paths", self.paths),
-                            ("daily_clients", self.clients), ("daily_countries", self.countries)):
+    def write_rows(self):
+        con = self.con
+        for table, rows in (("hourly", self.hourly), ("daily_paths", self.paths), ("daily_clients", self.clients),
+                            ("daily_countries", self.countries), ("daily_path_clients", self.pclients)):
             if rows:
                 upsert(con, table, [k + tuple(v) for k, v in rows.items()])
+                rows.clear()
         if self.errors:
             upsert(con, "daily_errors", [k + (v,) for k, v in self.errors.items()], "requests")
+            self.errors.clear()
+
+    def flush(self, con):
+        self.write_rows()
         now = int(time.time())
         con.executemany("INSERT OR REPLACE INTO file_hosts VALUES (?,?,?)",
                         [(h, b, now) for h, b in self.hosts.items() if b])
@@ -523,8 +545,8 @@ def first_line(path):
         return ""
 
 
-def read_from(path, offset, batch):
-    """Reads from byte offset up to the last complete line, returns the new offset."""
+def read_from(path, offset, batch, end=None):
+    """Reads from byte offset up to the last complete line (or up to end), returns the new offset."""
     with open_any(path) as f:
         if offset:
             if path.endswith(".gz"):
@@ -533,7 +555,7 @@ def read_from(path, offset, batch):
                 f.seek(offset)
         pos = offset
         for raw in f:
-            if not raw.endswith(b"\n"):
+            if not raw.endswith(b"\n") or (end is not None and pos + len(raw) > end):
                 break
             pos += len(raw)
             batch.add(raw.decode("utf-8", "replace").rstrip("\n"))
@@ -549,12 +571,35 @@ def rotated_of(base):
     return [p for n, p in sorted((n, p) for n, p in found if n is not None)][::-1]
 
 
+def backfill_path_clients(con, bases, known):
+    """Database of version 0.1.4 or older: visitor IPs per path were not stored yet. Reads the NPM logs
+    that are still there once more, but only up to where they were already counted, and only for this table."""
+    batch = Batch(con, only_pc=True)
+    for base in bases:
+        prev = known.get(base)
+        try:
+            st = os.stat(base)
+        except OSError:
+            st = None
+        rotated = prev is None or st is None or st.st_ino != prev[0] or (prev[2] and first_line(base) != prev[2])
+        for old in rotated_of(base):
+            end = prev[1] if prev and rotated and prev[2] and first_line(old) == prev[2] else None
+            read_from(old, 0, batch, end)
+        if prev and not rotated:
+            read_from(base, 0, batch, prev[1])
+    batch.write_rows()
+    return min(batch.days) if batch.days else datetime.now(TZ).strftime("%Y-%m-%d")
+
+
 def ingest():
     con = db_connect()
-    batch = Batch()
+    batch = Batch(con)
     first_run = con.execute("SELECT value FROM meta WHERE key='backfilled'").fetchone() is None
     known = {r[0]: r[1:] for r in con.execute("SELECT base, inode, offset, head FROM files")}
     bases = sorted(glob(os.path.join(LOG_DIR, "proxy-host-*_access.log")))
+    if con.execute("SELECT 1 FROM meta WHERE key='pc_since'").fetchone() is None:
+        since = "" if first_run else backfill_path_clients(con, bases, known)  # "": complete from the start
+        con.execute("INSERT OR REPLACE INTO meta VALUES ('pc_since', ?)", (since,))
     if not first_run and not con.execute("SELECT 1 FROM file_hosts LIMIT 1").fetchone():
         # database of version 0.1.2 or older: find out once which domains share a proxy host
         now = int(time.time())
@@ -588,7 +633,7 @@ def ingest():
     if first_run:
         con.execute("INSERT OR REPLACE INTO meta VALUES ('backfilled', ?)", (str(int(time.time())),))
     cutoff = (datetime.now(TZ) - timedelta(days=DETAIL_DAYS)).strftime("%Y-%m-%d")
-    for table in ("daily_paths", "daily_clients", "daily_errors"):
+    for table in ("daily_paths", "daily_clients", "daily_errors", "daily_path_clients"):
         con.execute(f"DELETE FROM {table} WHERE day < ?", (cutoff,))
     con.commit()
     load_sites(con)
@@ -873,6 +918,28 @@ def client_detail(q):
     }
 
 
+def path_clients(q):
+    """Visitor IPs behind one row of the failed requests (path + code), files (path) or areas (area)."""
+    p = Period(q)
+    by = q.get("by", [""])[0]
+    host, name, code = (q.get(k, [""])[0][:200] for k in ("of", "name", "code"))
+    col = {"error": "path", "path": "path", "area": "area"}.get(by)
+    if not col:
+        return {"error": "by must be error, path or area"}
+    where, args = f"{p.dwhere} AND {col} = ?", p.dargs + [name]
+    if host:
+        where += f" AND {p.hcol} = ?"; args.append(host)
+    if by == "error":
+        where += " AND code = ?"; args.append(code)
+    con = db_connect()
+    rows = con.execute(f"SELECT client, net, SUM(bytes), SUM(requests), COUNT(DISTINCT {p.hcol}), GROUP_CONCAT(DISTINCT kind) "
+                       f"FROM daily_path_clients WHERE {where} GROUP BY 1, 2 ORDER BY 4 DESC, 3 DESC", args).fetchall()
+    since = con.execute("SELECT value FROM meta WHERE key = 'pc_since'").fetchone()
+    con.close()
+    return {"clients": [client_row(r) for r in rows[:PC_LIMIT]], "visitors": len(rows),
+            "since": since[0] if since and since[0] > p.detail_day else None}
+
+
 def clear_host(host, group=True):
     """Deletes all stored figures of a domain (grouped: all domains of its proxy host).
     The NPM log files stay untouched."""
@@ -881,7 +948,7 @@ def clear_host(host, group=True):
         con = db_connect()
         b, r = con.execute(f"SELECT COALESCE(SUM(bytes),0), COALESCE(SUM(requests),0) FROM hourly WHERE {col} = ?",
                            (host,)).fetchone()
-        for table in ("hourly", "daily_paths", "daily_clients", "daily_countries", "daily_errors"):
+        for table in ("hourly", "daily_paths", "daily_clients", "daily_countries", "daily_errors", "daily_path_clients"):
             con.execute(f"DELETE FROM {table} WHERE {col} = ?", (host,))
         con.commit()
         con.close()
@@ -929,6 +996,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         u = urlparse(self.path)
         api = {"/api/summary": lambda: summary(parse_qs(u.query)), "/api/client": lambda: client_detail(parse_qs(u.query)),
+               "/api/requesters": lambda: path_clients(parse_qs(u.query)),
                "/api/meta": meta, "/api/update": lambda: update_now(parse_qs(u.query))}
         for path, fn in api.items():
             if u.path.endswith(path):

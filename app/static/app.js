@@ -286,6 +286,9 @@ function renderMap(d) {
 
 // ---------- Lists ----------
 
+// opts.expand(row) returns the HTML shown below a bar after a click, opts.open: Map key -> HTML
+const barKey = (r) => (r.sub || "") + "\n" + r.name;
+
 function barsHtml(rows, opts = {}) {
   if (!rows.length) return `<div class="empty">${t("empty")}</div>`;
   const total = opts.total ?? rows.reduce((a, r) => a + r.bytes, 0);
@@ -294,21 +297,44 @@ function barsHtml(rows, opts = {}) {
     const name = opts.label ? opts.label(r) : r.name;
     const sel = opts.selected && opts.selected === r.name ? " sel" : "";
     const extra = opts.extra ? " · " + opts.extra(r) : "";
-    return `<div class="bar-row${opts.click ? " click" : ""}${sel}" data-name="${esc(r.name)}" title="${t("n_requests", { n: nf.format(r.requests) })}">
+    const key = barKey(r), open = opts.open?.has(key);
+    const exp = opts.expand ? ` data-key="${esc(key)}" tabindex="0" aria-expanded="${!!open}"` : "";
+    const detail = open ? `<div class="bar-detail">${opts.open.get(key) || `<span class="empty">${t("loading_short")}</span>`}</div>` : "";
+    return `<div class="bar-row${opts.click || opts.expand ? " click" : ""}${open ? " open" : ""}${sel}" data-name="${esc(r.name)}"${exp} title="${t("n_requests", { n: nf.format(r.requests) })}">
       <span class="n">${esc(name)}${opts.sub && r.sub ? `<small>${esc(r.sub)}</small>` : ""}</span>
       <span class="v">${r.bytes ? fmtBytes(r.bytes) + " · " + pct(r.bytes, total) : t("n_requests_no_data", { n: nf.format(r.requests) })}${esc(extra)}</span>
       <div class="track"><div class="fill" style="width:${(r.bytes / top) * 100}%;background:${color(opts.mono ? 0 : i)}"></div></div>
-    </div>`;
+    </div>${detail}`;
   }).join("");
 }
 
 // the other domains of a proxy host, shown small next to its name
 const memberSub = (r) => ({ ...r, sub: otherMembers(r.name) });
 
+const barsOpen = {};  // id -> Map of expanded bars
+
 function renderBars(id, rows, opts = {}) {
   const el = $(id);
+  if (opts.expand) opts.open = barsOpen[id] ||= new Map();
   el.innerHTML = barsHtml(rows, opts);
   if (opts.click) el.querySelectorAll(".bar-row").forEach((row) => row.addEventListener("click", () => opts.click(row.dataset.name)));
+  if (opts.expand) {
+    const toggle = async (key) => {
+      const open = opts.open, row = rows.find((r) => barKey(r) === key);
+      if (open.has(key)) { open.delete(key); return renderBars(id, rows, opts); }
+      open.set(key, "");
+      renderBars(id, rows, opts);
+      let html;
+      try { html = await opts.expand(row); } catch (e) { html = `<span class="err">${esc(e.message)}</span>`; }
+      if (open.has(key)) { open.set(key, html); renderBars(id, rows, opts); }
+    };
+    el.querySelectorAll(".bar-row[data-key]").forEach((row) => {
+      row.addEventListener("click", () => toggle(row.dataset.key));
+      row.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(row.dataset.key); }
+      });
+    });
+  }
 }
 
 function daysHtml(days) {
@@ -416,12 +442,12 @@ async function toggleRow(id, key) {
   s.open.set(key, "");
   drawTable(id);
   let html;
-  try { html = await s.opts.expand(key); } catch (e) { html = `<span class="err">${esc(e.message)}</span>`; }
+  try { html = await s.opts.expand(key, s.rows.find((r) => s.opts.key(r) === key)); } catch (e) { html = `<span class="err">${esc(e.message)}</span>`; }
   if (s.open.has(key)) { s.open.set(key, html); drawTable(id); }
 }
 
 // details already loaded belong to the old time range or domain
-const closeDetails = () => Object.values(tables).forEach((s) => s.open.clear());
+const closeDetails = () => [...Object.values(tables).map((s) => s.open), ...Object.values(barsOpen)].forEach((m) => m.clear());
 
 const sizeCols = [
   { key: "bytes", label: "col_data", num: true, value: (r) => r.bytes, html: (r) => fmtBytes(r.bytes) },
@@ -455,6 +481,24 @@ async function visitorDetail(ip) {
     <div><p class="sub-head">${t("d_domains")}</p><div class="bars">${barsHtml(c.hosts.map(memberSub), { mono: true, limit: 10, sub: true })}</div></div>
     <div><p class="sub-head">${t("d_days")}</p>${daysHtml(c.days)}</div>
   </div>`;
+}
+
+// visitor IPs behind a failed request (by "error"), a path (by "path") or an area (by "area")
+async function requestersDetail(by, r) {
+  const q = `by=${by}&of=${encodeURIComponent(r.host ?? r.sub ?? "")}&name=${encodeURIComponent(r.name)}`
+    + `&code=${encodeURIComponent(r.status || "")}&days=${state.days}&${filterParams()}`;
+  const d = await getJSON("api/requesters?" + q);
+  if (d.error) throw new Error(d.error);
+  const since = d.since ? `<p class="note">${esc(t("requesters_since", { d: fullDate(d.since) }))}</p>` : "";
+  if (!d.clients.length) return `<span class="empty">${t("empty")}</span>${since}`;
+  const more = d.visitors > d.clients.length ? ` ${t("requesters_top", { n: nf.format(d.clients.length) })}` : "";
+  return `<p class="sub-head">${esc(t("requesters", { n: nf.format(d.visitors) }) + more)}</p>
+    <div class="table-wrap"><table><thead><tr><th>${t("col_address")}</th><th class="wide-only">${t("col_country")}</th>`
+    + `<th class="num">${t("col_requests")}</th><th class="num">${t("col_data")}</th></tr></thead><tbody>`
+    + d.clients.map((c) => `<tr><td>${esc(c.name)}<span class="badge">${esc(c.net)}</span>`
+      + `${c.org || c.kinds.length ? `<span class="host">${esc([c.org, c.kinds.map(kindName).join(", ")].filter(Boolean).join(" · "))}</span>` : ""}</td>`
+      + `<td class="wide-only">${esc(countryLabel(c.cc))}</td><td class="num">${nf.format(c.requests)}</td><td class="num">${fmtBytes(c.bytes)}</td></tr>`).join("")
+    + `</tbody></table></div>${since}`;
 }
 
 // ---------- Pages ----------
@@ -567,7 +611,7 @@ function render(d) {
   renderBars("b-kinds", d.kinds, { label: (r) => kindName(r.name) });
   renderBars("b-countries-top", d.countries, { limit: 6, mono: true, label: (r) => countryLabel(r.name), click: (cc) => go("geo", cc) });
 
-  renderBars("b-areas", d.areas, { limit: 15, mono: true, sub: !d.host });
+  renderBars("b-areas", d.areas, { limit: 15, mono: true, sub: !d.host, expand: (r) => requestersDetail("area", r) });
   renderBars("b-status", d.statuses, { label: (r) => t("status")[r.name] || r.name });
   renderBars("b-nets", d.nets);
   renderHod(d.hod);
@@ -577,7 +621,8 @@ function render(d) {
     { key: "status", label: "col_status", value: (r) => r.status, html: (r) => `<span class="code c${esc(r.status[0])}">${esc(r.status)}</span> ${esc(t("codes")[r.status] || "")}` },
     sizeCols[1],
   ], d.errors, {
-    key: (r) => r.host + r.name + r.status, sort: "requests", placeholder: "search_errors",
+    key: (r) => r.host + "\n" + r.name + "\n" + r.status, sort: "requests", placeholder: "search_errors",
+    expand: (k, r) => requestersDetail("error", r),
     search: (r) => `${r.name} ${r.host} ${statusLabel(r.status)}`,
   });
 
@@ -607,7 +652,10 @@ function render(d) {
   dataTable("t-paths", [
     { key: "name", label: "col_path", value: (r) => r.name, cls: "path", html: (r) => pathCell(r, d) },
     ...sizeCols,
-  ], d.paths, { key: (r) => r.host + r.name, sort: "bytes", placeholder: "search_paths", search: (r) => r.name + " " + r.host });
+  ], d.paths, {
+    key: (r) => r.host + "\n" + r.name, sort: "bytes", placeholder: "search_paths", search: (r) => r.name + " " + r.host,
+    expand: (k, r) => requestersDetail("path", r),
+  });
 }
 
 // notes about data that is only recorded since the update to 0.0.3
