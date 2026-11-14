@@ -30,6 +30,7 @@ const state = {
   step: "",  // chart columns chosen by hand, empty: automatic
   langPref, lang: langPref === "auto" ? browserLang() : langPref,
   page: "overview", country: "", data: null, meta: null, world: null,
+  from: "", to: "",  // dates chosen by hand (YYYY-MM-DD), empty: the last state.days days
 };
 let nf, regionNames;
 
@@ -81,6 +82,9 @@ const siteOf = (host) => (state.group && state.meta?.sites.find((s) => s.members
 const membersOf = (name) => (state.group && state.meta?.sites.find((s) => s.name === name)?.members) || [name];
 const otherMembers = (name) => membersOf(name).filter((h) => h !== name).join(", ");
 const withMembers = (name) => (otherMembers(name) ? t("with_members", { host: name, others: otherMembers(name) }) : name);
+const rangeParams = () => (state.from ? `from=${state.from}&to=${state.to}` : `days=${state.days}`);
+// number of days shown, also for dates chosen by hand
+const rangeDays = () => (state.from ? Math.round((Date.parse(state.to) - Date.parse(state.from)) / 864e5) + 1 : state.days);
 const filterParams = () => `host=${encodeURIComponent(state.host)}&bots=${state.bots ? 1 : 0}&group=${state.group ? 1 : 0}`;
 
 async function getJSON(url) {
@@ -195,7 +199,7 @@ function columnTitle(d, i) {
 }
 
 // automatic chart columns: weeks for a year, otherwise days; weeks and months can be picked from 90 days on
-const chartStep = () => (state.days < 90 ? "day" : state.step || (state.days >= 365 ? "week" : "day"));
+const chartStep = () => (rangeDays() < 90 ? "day" : state.step || (rangeDays() >= 365 ? "week" : "day"));
 
 function renderChart(d) {
   const el = $("chart");
@@ -240,6 +244,15 @@ function renderChart(d) {
   }
   svg += "</svg>";
   el.innerHTML = svg;
+  // a column of days, weeks or months shows just that period
+  const go = !d.hourly && d.ranges;
+  $("chart-note").textContent = go ? t("chart_click") : "";
+  if (go) {
+    el.querySelectorAll(".col").forEach((g) => {
+      g.classList.add("go");
+      g.addEventListener("click", () => { const [a, b] = d.ranges[Number(g.dataset.i)]; setRange(a, b); });
+    });
+  }
 
   $("legend").innerHTML = series.map((s, i) => `<span><i style="background:${color(i)}"></i>${esc(s.name)}</span>`).join("");
 
@@ -341,6 +354,33 @@ function daysHtml(days) {
   const max = Math.max(1, ...days.map((x) => x.bytes));
   return `<div class="days" style="grid-template-columns:repeat(${days.length},1fr)">${days.map((x) =>
     `<div style="height:${(x.bytes / max) * 100}%" data-tip="${esc(longDay(x.day) + ": " + fmtBytes(x.bytes))}"></div>`).join("")}</div>`;
+}
+
+// weekday x hour, Monday first, colour strength relative to the strongest hour
+function renderHeat(week) {
+  const max = Math.max(0, ...week.flat());
+  const days = [...Array(7)].map((_, i) => new Date(2024, 0, 1 + i).toLocaleDateString(t("locale"), { weekday: "short" }));
+  let h = "";
+  week.forEach((row, wd) => {
+    h += `<span>${esc(days[wd])}</span>`;
+    h += row.map((v, hr) => {
+      const tip = esc(t("week_tip", { d: days[wd], h: hr, h2: hr + 1, v: fmtBytes(v) }));
+      return v > 0 ? `<i style="opacity:${(0.15 + 0.85 * v / max).toFixed(2)}" data-tip="${tip}"></i>` : `<i class="zero" data-tip="${tip}"></i>`;
+    }).join("");
+  });
+  h += `<div class="hours">${t("hod_axis").map((l) => `<span>${l}</span>`).join("")}</div>`;
+  $("heat").innerHTML = h;
+}
+
+// share of bot requests per chart column
+function renderShare(d) {
+  const el = $("share");
+  el.style.gridTemplateColumns = `repeat(${d.bots_share.length}, 1fr)`;
+  el.innerHTML = d.bots_share.map((x, i) => {
+    const p = x.requests ? x.bots / x.requests : 0;
+    const tip = esc(t("bots_share_tip", { d: columnTitle(d, i), p: pctText(Math.round(p * 100)), b: nf.format(x.bots), n: nf.format(x.requests) }));
+    return `<div style="height:${(p * 100).toFixed(1)}%" data-tip="${tip}"></div>`;
+  }).join("");
 }
 
 function renderHod(hod) {
@@ -467,7 +507,7 @@ function visitorCols() {
 }
 
 async function visitorDetail(ip) {
-  const q = `ip=${encodeURIComponent(ip)}&days=${state.days}&${filterParams()}`;
+  const q = `ip=${encodeURIComponent(ip)}&${rangeParams()}&${filterParams()}`;
   const c = await getJSON("api/client?" + q);
   const prov = c.asn ? `${providerName(c)} (AS${c.asn})` : providerName(c);
   const facts = [
@@ -486,7 +526,7 @@ async function visitorDetail(ip) {
 // visitor IPs behind a failed request (by "error"), a path (by "path") or an area (by "area")
 async function requestersDetail(by, r) {
   const q = `by=${by}&of=${encodeURIComponent(r.host ?? r.sub ?? "")}&name=${encodeURIComponent(r.name)}`
-    + `&code=${encodeURIComponent(r.status || "")}&days=${state.days}&${filterParams()}`;
+    + `&code=${encodeURIComponent(r.status || "")}&${rangeParams()}&${filterParams()}`;
   const d = await getJSON("api/requesters?" + q);
   if (d.error) throw new Error(d.error);
   const since = d.since ? `<p class="note">${esc(t("requesters_since", { d: fullDate(d.since) }))}</p>` : "";
@@ -573,10 +613,10 @@ function setDelta(id, cur, prev, fmt) {
 }
 
 function renderKpis(d) {
-  const days = d.hourly ? 1 : d.days, tot = d.total, prev = d.prev;
+  const days = d.hourly && !d.custom ? 1 : d.days, tot = d.total, prev = d.prev;
   const bps = (p) => (p ? (p.bytes * 8) / 3600 : 0);
   $("k-bytes").textContent = fmtBytes(tot.bytes);
-  $("k-bytes-day").textContent = d.hourly ? t("last_24h") : t("per_day", { v: fmtBytes(tot.bytes / days) });
+  $("k-bytes-day").textContent = d.hourly && !d.custom ? t("last_24h") : t("per_day", { v: fmtBytes(tot.bytes / days) });
   $("k-req").textContent = nf.format(tot.requests);
   $("k-req-avg").textContent = tot.requests ? t("per_request", { v: fmtBytes(tot.bytes / tot.requests) }) : "";
   $("k-inet").textContent = fmtBytes(tot.internet);
@@ -615,6 +655,8 @@ function render(d) {
   renderBars("b-status", d.statuses, { label: (r) => t("status")[r.name] || r.name });
   renderBars("b-nets", d.nets);
   renderHod(d.hod);
+  renderHeat(d.week);
+  renderShare(d);
   renderNotes(d);
   dataTable("t-errors", [
     { key: "name", label: "col_path", value: (r) => r.name, cls: "path", html: (r) => pathCell(r, d) },
@@ -929,12 +971,22 @@ async function loadMeta() {
   renderMeta(m);
 }
 
+// fixed dates, from the date fields or a click in the chart; empty: back to the last N days
+function setRange(from, to) {
+  state.from = from; state.to = to; state.step = "";
+  closeDetails();
+  load();
+}
+
 async function load() {
-  document.querySelectorAll("#range button").forEach((b) => b.classList.toggle("on", Number(b.dataset.days) === state.days));
+  document.querySelectorAll("#range button").forEach((b) => b.classList.toggle("on", !state.from && Number(b.dataset.days) === state.days));
+  $("custom-active").hidden = !state.from;
+  $("custom-text").textContent = state.from === state.to ? fullDate(state.from)
+    : t("range_text", { a: fullDate(state.from), b: fullDate(state.to) });
   $("bots").checked = state.bots;
   $("group").checked = state.group;
   try {
-    const q = `days=${state.days}&country=${encodeURIComponent(state.country)}&${filterParams()}&step=${chartStep()}`;
+    const q = `${rangeParams()}&country=${encodeURIComponent(state.country)}&${filterParams()}&step=${chartStep()}`;
     const d = await getJSON("api/summary?" + q);
     state.data = d;
     render(d);
@@ -945,6 +997,8 @@ async function load() {
 
 document.querySelectorAll("#range button").forEach((b) => b.addEventListener("click", () => {
   state.days = Number(b.dataset.days);
+  state.from = state.to = "";
+  $("custom-box").hidden = true;
   state.step = "";
   store.set("days", String(state.days));
   closeDetails();
@@ -982,6 +1036,25 @@ $("clear-open").addEventListener("click", () => {
 $("clear-no").addEventListener("click", () => { $("clear-box").hidden = true; updateClear(); });
 $("clear-yes").addEventListener("click", clearHost);
 $("server-form").addEventListener("submit", saveServer);
+$("custom-open").addEventListener("click", () => {
+  const box = $("custom-box"), today = new Date().toLocaleDateString("sv");  // YYYY-MM-DD in local time
+  box.hidden = !box.hidden;
+  if (box.hidden) return;
+  for (const id of ["date-from", "date-to"]) {
+    $(id).max = today;
+    if (state.meta?.first_day) $(id).min = state.meta.first_day;
+  }
+  $("date-from").value = state.from || state.data?.from || today;
+  $("date-to").value = state.to || state.data?.to || today;
+});
+$("custom-box").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const a = $("date-from").value, b = $("date-to").value;
+  if (!a || !b) return;
+  setRange(a < b ? a : b, a < b ? b : a);
+  $("custom-box").hidden = true;
+});
+$("custom-reset").addEventListener("click", () => setRange("", ""));
 $("country-clear").addEventListener("click", () => setCountry(state.country));
 // links to pages, also those drawn later (footer)
 document.addEventListener("click", (e) => {

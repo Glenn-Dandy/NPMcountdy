@@ -144,6 +144,22 @@ button.link.danger:hover { text-decoration: underline; }
 .hod { display: grid; grid-template-columns: repeat(24, 1fr); align-items: end; gap: 3px; height: 130px; }
 .hod div { background: var(--c1); border-radius: 2px 2px 0 0; min-height: 2px; opacity: .85; }
 .hod div:hover { opacity: 1; }
+.custom-active { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin: 4px 0 0;
+  padding: 6px 10px; border-radius: 8px; background: var(--accent); color: #fff; font-size: 13px; }
+.custom-active .link { color: #fff; font-size: 16px; line-height: 1; padding: 0 2px; margin: 0; }
+#custom-open { margin: 6px 10px 0; }
+.custom-box { display: flex; flex-direction: column; gap: 6px; margin: 6px 0 0; padding: 0 10px; font-size: 13px; }
+.custom-box label { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.custom-box input { font: inherit; padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--text); color-scheme: light dark; }
+.chart .col.go { cursor: pointer; }
+.heat { display: grid; grid-template-columns: auto repeat(24, 1fr); gap: 2px; font-size: 11px; color: var(--muted); }
+.heat span { align-self: center; padding-right: 6px; }
+.heat i { display: block; height: 18px; border-radius: 2px; background: var(--c1); }
+.heat i.zero { background: var(--track); }
+.heat .hours { grid-column: 2 / -1; display: flex; justify-content: space-between; margin-top: 2px; }
+.share { display: grid; align-items: end; gap: 2px; height: 90px; }
+.share div { background: var(--c4); border-radius: 2px 2px 0 0; min-height: 1px; opacity: .85; }
+.share div:hover { opacity: 1; }
 .hod-axis { display: flex; justify-content: space-between; color: var(--muted); font-size: 11px; margin-top: 4px; }
 .note { color: var(--muted); font-size: 12px; margin: 8px 0 0; }
 

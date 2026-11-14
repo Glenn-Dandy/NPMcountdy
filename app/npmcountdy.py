@@ -21,7 +21,7 @@ from ipaddress import ip_address, ip_network
 from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo
 
-VERSION = "0.1.6"
+VERSION = "0.1.7"
 REPO = "https://github.com/Glenn-Dandy/NPMcountdy"
 LOG_DIR = os.environ.get("LOG_DIR", "/logs")
 DB_PATH = os.environ.get("DB_PATH", "/data/npmcountdy.db")
@@ -848,39 +848,59 @@ def day_str(d):
 
 
 class Period:
-    """Time range of a request: up to 2 days by hour, longer ones by day.
-    prev_* is the range of the same length right before it, for comparisons."""
+    """Time range of a request: the last N days (days=) or fixed days (from=, to=, YYYY-MM-DD).
+    Up to 2 days by hour, longer ones by day. prev_* is the range of the same length right before it."""
 
     def __init__(self, q):
-        self.days = max(1, min(int(q.get("days", ["7"])[0]), 3650))
         self.host = q.get("host", [""])[0]
         self.bots = q.get("bots", ["1"])[0] != "0"
         self.group = q.get("group", ["1"])[0] != "0"  # domains of one proxy host as one
         self.hcol = "site(host)" if self.group else "host"
-        self.now = now = datetime.now(TZ)
+        real_now = datetime.now(TZ)
+        today = real_now.date()
+        first, last = q.get("from", [""])[0], q.get("to", [""])[0]
+        self.custom = bool(first and last)
+        if self.custom:
+            try:
+                d0, d1 = date.fromisoformat(first), min(date.fromisoformat(last), today)
+            except ValueError:
+                raise ValueError("from and to must be dates (YYYY-MM-DD)")
+            d0, d1 = min(d0, d1), max(d0, d1)
+            d0 = max(d0, d1 - timedelta(days=3649))
+            self.days = (d1 - d0).days + 1
+        else:
+            self.days = max(1, min(int(q.get("days", ["7"])[0]), 3650))
+            d1 = today
+            d0 = d1 - timedelta(days=self.days - 1)
+        midnight = lambda d: datetime(d.year, d.month, d.day, tzinfo=TZ)
+        # end of the range: now, or the end of its last day
+        self.now = now = real_now if d1 == today else midnight(d1 + timedelta(days=1)) - timedelta(seconds=1)
         self.hourly = self.days <= 2
-        self.hours = 48 if self.days == 2 else 24
-        now_ts = int(now.timestamp()) // 3600 * 3600
-        start = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=self.days - 1)
-        self.start_day = day_str(start)
+        self.hours = 24 * self.days if self.custom else (48 if self.days == 2 else 24)
+        start = midnight(d0)
+        self.start_day, self.end_day = day_str(d0), day_str(d1)
+        end_ts = int(midnight(d1 + timedelta(days=1)).timestamp())
         if self.hourly:
-            self.start_ts = now_ts - (self.hours - 1) * 3600
-            self.where, self.args = "ts >= ?", [self.start_ts]
+            # last 24/48 hours, or whole days when chosen by date
+            self.start_ts = int(start.timestamp()) if self.custom else int(now.timestamp()) // 3600 * 3600 - (self.hours - 1) * 3600
+            self.where, self.args = "ts >= ? AND ts < ?", [self.start_ts, end_ts]
             self.detail_day = day_str(datetime.fromtimestamp(self.start_ts, TZ))
             self.prev = ("ts >= ? AND ts < ?", [self.start_ts - self.hours * 3600, self.start_ts])
             self.prev_day = day_str(datetime.fromtimestamp(self.start_ts - self.hours * 3600, TZ))
         else:
-            self.where, self.args = "day >= ?", [self.start_day]
+            self.where, self.args = "day >= ? AND day <= ?", [self.start_day, self.end_day]
             self.detail_day = self.start_day
             # same length and the same time of day, so a running day is compared with a running day
             self.prev = ("ts >= ? AND ts < ?", [int((start - timedelta(days=self.days)).timestamp()),
                                                 int((now - timedelta(days=self.days)).timestamp())])
             self.prev_day = day_str(start - timedelta(days=self.days))
         # the tables kept per day (files, visitors, countries, errors) start at detail_day
-        self.dwhere, self.dargs = "day >= ?", [self.detail_day]
+        self.dwhere, self.dargs = "day >= ? AND day <= ?", [self.detail_day, self.end_day]
         extra, extra_args = "", []
         if self.host:
             extra, extra_args = f" AND {self.hcol} = ?", [self.host]
+        # without the bot filter, for the share of bots
+        self.where_all, self.args_all = self.where + extra, self.args + extra_args
         if not self.bots:
             extra += f" AND kind != '{BOT}'"
         self.where += extra; self.args += extra_args
@@ -940,7 +960,7 @@ def summary(q):
     if first and first <= p.prev_day:  # only compare with a range that is fully recorded
         prev = totals(*p.prev)
         prev["visitors"] = None
-        keep_from = day_str(p.now - timedelta(days=DETAIL_DAYS - 1))
+        keep_from = day_str(datetime.now(TZ) - timedelta(days=DETAIL_DAYS - 1))
         if not p.hourly and p.prev_day >= keep_from:
             prev["visitors"] = one(f"SELECT COUNT(DISTINCT client) FROM daily_clients WHERE day >= ? AND day < ?{p.extra}",
                                    [p.prev_day, p.start_day] + p.extra_args)[0][0]
@@ -957,6 +977,26 @@ def summary(q):
     for b, g, v in series_rows:
         if b in index:
             series.setdefault(g, [0] * len(labels))[index[b]] += v
+
+    # requests of bots and scanners per chart column, counted even when the bot filter is off
+    bots_share = [{"requests": 0, "bots": 0} for _ in labels]
+    for b, r, br in one(f"SELECT {'ts' if p.hourly else 'day'}, SUM(requests), "
+                        f"SUM(CASE WHEN kind = ? THEN requests ELSE 0 END) FROM hourly WHERE {p.where_all} GROUP BY 1",
+                        [BOT] + p.args_all):
+        if b in index:
+            bots_share[index[b]]["requests"] += r
+            bots_share[index[b]]["bots"] += br
+
+    # data per weekday and hour, as the average of the days of that weekday in the range (Monday first)
+    week = [[0] * 24 for _ in range(7)]
+    for wd, h, v in one(f"SELECT CAST(strftime('%w', day) AS INTEGER), hod, SUM(bytes) FROM hourly "
+                        f"WHERE {where} GROUP BY 1, 2", args):
+        week[(wd + 6) % 7][h] += v
+    count, d = [0] * 7, date.fromisoformat(max(p.detail_day, first or p.detail_day))  # only days that were recorded
+    while d <= p.now.date():
+        count[d.weekday()] += 1
+        d += timedelta(days=1)
+    week = [[v / count[i] if count[i] else 0 for v in row] for i, row in enumerate(week)]
 
     def breakdown(col, limit=50):
         return [{"name": r[0], "bytes": r[1], "requests": r[2]} for r in one(
@@ -989,6 +1029,7 @@ def summary(q):
     total["visitors"] = len(clients)
     result = {
         "days": p.days, "host": p.host, "bots": p.bots, "hourly": p.hourly, "step": "hour" if p.hourly else step,
+        "custom": p.custom, "from": p.start_day, "to": p.end_day, "bots_share": bots_share, "week": week,
         "group": group, "start_day": p.detail_day,
         "total": total, "prev": prev,
         "labels": labels, "ranges": ranges,

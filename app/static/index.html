@@ -48,6 +48,13 @@
       <button data-days="90" data-i18n="range_90">90 days</button>
       <button data-days="365" data-i18n="range_365">1 year</button>
     </div>
+    <p class="custom-active" id="custom-active" hidden><span id="custom-text"></span><button class="link" id="custom-reset" data-i18n-aria="custom_reset" aria-label="Back">×</button></p>
+    <button class="link" id="custom-open" data-i18n="range_custom">Choose dates …</button>
+    <form class="custom-box" id="custom-box" hidden>
+      <label><span data-i18n="date_from">From</span><input type="date" id="date-from" required></label>
+      <label><span data-i18n="date_to">To</span><input type="date" id="date-to" required></label>
+      <button class="btn" type="submit" data-i18n="show">Show</button>
+    </form>
   </div>
 
   <div class="side-group">
@@ -84,6 +91,7 @@
         </div>
       </div>
       <div class="chart" id="chart"></div>
+      <p class="note" id="chart-note"></p>
     </section>
     <div class="grid">
       <section class="card"><h3 id="t-group">Domains</h3><div class="bars" id="b-group"></div></section>
@@ -100,6 +108,16 @@
       <section class="card"><h3 data-i18n="statuses">Responses</h3><div class="bars" id="b-status"></div></section>
       <section class="card"><h3 data-i18n="nets">LAN or internet</h3><div class="bars" id="b-nets"></div></section>
     </div>
+    <section class="card wide">
+      <h3 data-i18n="week_heat">Weekday and time of day</h3>
+      <div class="heat" id="heat"></div>
+      <p class="note" data-i18n="week_note"></p>
+    </section>
+    <section class="card wide">
+      <h3 data-i18n="bots_share">Bots and scanners over time</h3>
+      <div class="share" id="share"></div>
+      <p class="note" data-i18n="bots_share_note"></p>
+    </section>
     <section class="card wide">
       <h3 data-i18n="errors">Failed requests</h3>
       <p class="note top" id="errors-note"></p>
