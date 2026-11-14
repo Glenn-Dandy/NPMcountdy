@@ -393,7 +393,7 @@ function renderApps(d) {
 }
 
 // settings page: apps seen in the last 30 days, set up as own client type
-let appsSetup = null, appsEditing = "";
+let appsSetup = null;
 
 async function loadApps() {
   appsSetup = await getJSON(`api/apps?days=30&${filterParams().replace(/bots=0/, "bots=1").replace(/lan=0/, "lan=1")}`);
@@ -408,26 +408,15 @@ function renderAppsSetup() {
   el.innerHTML = `<thead><tr><th>${t("col_app")}</th><th class="wide-only">${t("col_versions")}</th><th>${t("col_counted")}</th>`
     + `<th class="num">${t("col_requests")}</th><th></th></tr></thead><tbody>` + s.apps.map((a) => {
     const own = typeOf(a.name);
-    let act;
-    if (appsEditing === a.name) {
-      act = `<form class="setup-form" data-app="${esc(a.name)}"><input value="${esc(own?.name || a.name)}" maxlength="40" required>`
-        + `<button class="btn" type="submit">${t("setup_save")}</button><button class="link" type="button" data-cancel>${t("setup_cancel")}</button></form>`;
-    } else if (own) {
-      act = `<button class="link" data-remove="${esc(own.name)}">${t("setup_remove")}</button>`;
-    } else {
-      act = `<button class="btn" data-setup="${esc(a.name)}">${t("setup")}</button>`;
-    }
+    const act = own ? `<button class="link" data-remove="${esc(own.name)}">${t("setup_remove")}</button>`
+      : `<button class="btn" data-setup="${esc(a.name)}">${t("setup")}</button>`;
     const vers = a.versions.slice(0, 3).map((v) => v.name || t("version_none")).join(", ");
     return `<tr><td>${esc(a.name)}<span class="host">${esc(a.hosts.slice(0, 3).join(", "))}</span></td>`
       + `<td class="wide-only">${esc(vers)}</td><td>${esc(kindName(a.kind))}</td><td class="num">${nf.format(a.requests)}</td><td class="act">${act}</td></tr>`;
   }).join("") + "</tbody>";
-  el.querySelectorAll("[data-setup]").forEach((b) => b.addEventListener("click", () => { appsEditing = b.dataset.setup; renderAppsSetup(); el.querySelector(".setup-form input")?.focus(); }));
-  el.querySelectorAll("[data-cancel]").forEach((b) => b.addEventListener("click", () => { appsEditing = ""; renderAppsSetup(); }));
+  // the client type gets the name the app sends in its user agent
+  el.querySelectorAll("[data-setup]").forEach((b) => b.addEventListener("click", () => changeClientType({ action: "add", app: b.dataset.setup, name: b.dataset.setup })));
   el.querySelectorAll("[data-remove]").forEach((b) => b.addEventListener("click", () => changeClientType({ action: "delete", name: b.dataset.remove })));
-  el.querySelectorAll(".setup-form").forEach((f) => f.addEventListener("submit", (e) => {
-    e.preventDefault();
-    changeClientType({ action: "add", app: f.dataset.app, name: f.querySelector("input").value.trim() });
-  }));
 }
 
 async function changeClientType(body) {
@@ -439,7 +428,6 @@ async function changeClientType(body) {
     });
     const res = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(res.error || "HTTP " + r.status);
-    appsEditing = "";
     await loadApps();
   } catch (e) {
     $("apps-table").insertAdjacentHTML("afterend", `<p class="note err">${esc(e.message)}</p>`);

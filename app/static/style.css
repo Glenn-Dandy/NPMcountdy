@@ -148,8 +148,6 @@ button.link.danger:hover { text-decoration: underline; }
 .apps .sub-head { margin-top: 0; display: flex; justify-content: space-between; gap: 8px; }
 .apps .sub-head b { color: var(--text); }
 #apps-table td.act { text-align: right; white-space: nowrap; }
-#apps-table .setup-form { display: inline-flex; gap: 6px; align-items: center; }
-#apps-table .setup-form input { font: inherit; width: 150px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--text); }
 .custom-active { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin: 4px 0 0;
   padding: 6px 10px; border-radius: 8px; background: var(--accent); color: #fff; font-size: 13px; }
 .custom-active .link { color: #fff; font-size: 16px; line-height: 1; padding: 0 2px; margin: 0; }
