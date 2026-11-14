@@ -2,34 +2,33 @@
 
 **English** · [Deutsch](README.de.md)
 
-Version 0.1.5
+Version 0.1.6
 
 Traffic dashboard for Nginx Proxy Manager (NPM). Reads its access logs and shows data and
 requests per domain, path, visitor IP, country, provider and client type.
 
 ## Requirements
 
-Docker with the Compose plugin, and git. Check: `docker compose version`
+Docker with the Compose plugin. Check: `docker compose version`
 
-Ubuntu/Debian: `sudo apt install docker.io docker-compose-v2 git`
+Ubuntu/Debian: `sudo apt install docker.io docker-compose-v2`
 
 ## Installation
 
 ```bash
-git clone https://github.com/Glenn-Dandy/NPMcountdy.git ~/npmcountdy
-cd ~/npmcountdy
-cp .env.example .env
-nano .env
-sudo chown 1000:1000 data
-sudo docker compose up -d --build
+mkdir ~/npmcountdy && cd ~/npmcountdy
+curl -O https://raw.githubusercontent.com/Glenn-Dandy/NPMcountdy/main/docker-compose.yml
+nano docker-compose.yml
+mkdir data && sudo chown 1000:1000 data
+sudo docker compose up -d
 ```
 
-Put the NPM log folder into `.env`:
+In `docker-compose.yml` under `volumes`, put the NPM log folder (left of the `:`):
 
-| NPM runs | `.env` |
+| NPM runs | Line |
 |---|---|
-| in Docker | `NPM_LOGS=/opt/data/logs` (path of its `/data` volume + `/logs`) |
-| without Docker | `NPM_LOGS=/data/logs` |
+| in Docker | `- /opt/data/logs:/logs:ro` (path of its `/data` volume + `/logs`) |
+| without Docker | `- /data/logs:/logs:ro` |
 
 Open: `http://<server-IP>:7881`. No login, only run it in your LAN.
 
@@ -37,20 +36,29 @@ Open: `http://<server-IP>:7881`. No login, only run it in your LAN.
 
 ```bash
 cd ~/npmcountdy
-git pull
-sudo docker compose up -d --build
+sudo docker compose pull
+sudo docker compose up -d
 ```
 
-`.env` is kept. If `git pull` stops because `docker-compose.yml` was changed: put the log folder
-into `.env`, `git checkout docker-compose.yml`, then again.
+`docker-compose.yml` and `data/` stay as they are.
+
+### Switching from 0.1.5 or older (installed with git)
+
+```bash
+cd ~/npmcountdy
+git checkout docker-compose.yml
+git pull
+nano docker-compose.yml        # check the log folder, see the table above
+sudo docker compose pull
+sudo docker compose up -d
+```
+
+`.env` is no longer read and can be deleted. After that, only the update commands above.
 
 ## Settings
 
 On the settings page: time zone, read interval, retention, countries, providers, update check.
-Stored in `data/config.yaml`, applies right away and is kept on updates.
-
-Only the log folder is in `.env` (`NPM_LOGS`), because Docker mounts it at start.
-After a change: `sudo docker compose up -d`
+Stored in `data/config.yaml`, applies right away.
 
 ## Behind Cloudflare
 

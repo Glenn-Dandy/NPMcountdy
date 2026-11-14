@@ -1,20 +1,17 @@
 services:
-  # Reads the NPM access logs (read-only) and writes the figures and settings to ./data.
-  # Settings are made on the settings page (data/config.yaml). Only the log folder is set here, via .env.
-  # No login of its own: only run it in the LAN, e.g. behind an NPM proxy host with an access list.
   npmcountdy:
-    build: .
-    image: npmcountdy:local
+    image: ghcr.io/glenn-dandy/npmcountdy:latest
     container_name: npmcountdy
     restart: unless-stopped
     ports:
       - "7881:7881"
     environment:
-      TZ: Europe/Berlin                       # default, can be changed on the settings page
-      CLEAR: "${CLEAR:-on}"                   # allow deleting a domain's data in the UI
-      LOG_SOURCE: "${NPM_LOGS:-/opt/data/logs}"  # only shown on the settings page
+      TZ: Europe/Berlin   # default, can be changed on the settings page
+      CLEAR: "on"         # allow deleting a domain's data in the UI ("off" turns it off)
     volumes:
-      - ${NPM_LOGS:-/opt/data/logs}:/logs:ro
+      # NPM log folder on the left. NPM in Docker: /opt/data/logs (its /data volume + /logs),
+      # NPM without Docker: /data/logs
+      - /opt/data/logs:/logs:ro
       - ./data:/data
     read_only: true
     tmpfs:

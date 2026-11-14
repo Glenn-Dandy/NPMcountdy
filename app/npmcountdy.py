@@ -21,7 +21,7 @@ from ipaddress import ip_address, ip_network
 from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo
 
-VERSION = "0.1.5"
+VERSION = "0.1.6"
 REPO = "https://github.com/Glenn-Dandy/NPMcountdy"
 LOG_DIR = os.environ.get("LOG_DIR", "/logs")
 DB_PATH = os.environ.get("DB_PATH", "/data/npmcountdy.db")
@@ -292,10 +292,26 @@ asn_cache = {}
 
 # ---------- Settings: data/config.yaml, written by the settings page ----------
 # Environment variables (docker-compose.yml) are only the defaults. The log folder is not in here:
-# the container only sees the folder Docker mounts as /logs (NPM_LOGS in .env).
+# the container only sees the folder Docker mounts as /logs (docker-compose.yml).
 
 CONFIG_PATH = os.environ.get("CONFIG_PATH", os.path.join(DATA_DIR, "config.yaml"))
-LOG_SOURCE = os.environ.get("LOG_SOURCE", LOG_DIR)  # the log folder as the server names it, only shown in the UI
+
+
+def mount_source(path):
+    """The folder on the server that is mounted at path, from /proc/self/mountinfo (only shown in the UI).
+    It is the path inside its file system, so it can miss a prefix if that folder is on a file system of its own."""
+    try:
+        with open("/proc/self/mountinfo", encoding="utf-8") as f:
+            for line in f:
+                fields = line.split()
+                if len(fields) > 4 and fields[4] == path:
+                    return fields[3].replace("\\040", " ")
+    except OSError:
+        pass
+    return path
+
+
+LOG_SOURCE = os.environ.get("LOG_SOURCE") or mount_source(LOG_DIR)
 DEFAULTS = {"timezone": os.environ.get("TZ", "Europe/Berlin"), "interval": INTERVAL, "detail_days": DETAIL_DAYS,
             "countries": GEOIP, "providers": ASN, "update_check": UPDATE_CHECK,
             "geoip_url": GEO["country"]["url"], "asn_url": GEO["asn"]["url"]}

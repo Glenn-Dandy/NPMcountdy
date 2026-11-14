@@ -685,7 +685,7 @@ function renderUpdate(u) {
     html = `<p class="update-new">${esc(t("update_available", { v: u.latest }))}</p>
       <a class="more" href="${esc(u.url)}" target="_blank" rel="noopener">${esc(t("update_open"))}</a>
       <p class="muted">${esc(t("update_how"))}</p>
-      <pre class="cmd">cd ~/npmcountdy\ngit pull\nsudo docker compose up -d --build</pre>`;
+      <pre class="cmd">cd ~/npmcountdy\nsudo docker compose pull\nsudo docker compose up -d</pre>`;
   } else if (u.latest) html = `<p>${esc(t("up_to_date"))}</p>`;
   else html = u.error ? `<p class="err">${esc(t("update_failed", { e: u.error }))}</p>` : `<p class="muted">${esc(t("checking"))}</p>`;
   if (!updateChecking && u.latest && u.error) html += `<p class="err">${esc(t("update_failed", { e: u.error }))}</p>`;
