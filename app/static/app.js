@@ -381,7 +381,6 @@ function renderApps(d) {
       <p class="sub-head"><b>${esc(a.name)}</b><span>${esc(t("n_requests", { n: nf.format(a.requests) }))}</span></p>
       <div class="bars">${barsHtml(a.versions.map(ver), { mono: true, count: true, limit: 6 })}</div></div>`).join("")
     : `<div class="empty">${t("apps_none")}</div>`;
-  $("apps-note").textContent = t("apps_note");
 }
 
 // settings page: apps seen in the last 30 days, set up as own client type

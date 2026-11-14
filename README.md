@@ -2,7 +2,7 @@
 
 **English** · [Deutsch](README.de.md)
 
-Version 0.1.9
+Version 0.1.10
 
 Traffic dashboard for Nginx Proxy Manager (NPM). Reads its access logs and shows data and
 requests per domain, path, visitor IP, country, provider and client type.
