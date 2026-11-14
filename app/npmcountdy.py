@@ -21,7 +21,7 @@ from ipaddress import ip_address, ip_network
 from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo
 
-VERSION = "0.1.7"
+VERSION = "0.1.8"
 REPO = "https://github.com/Glenn-Dandy/NPMcountdy"
 LOG_DIR = os.environ.get("LOG_DIR", "/logs")
 DB_PATH = os.environ.get("DB_PATH", "/data/npmcountdy.db")
@@ -58,8 +58,12 @@ CLOUDFLARE = [ip_network(n) for n in (
 LINE_RE = re.compile(
     r'^\[(?P<time>[^\]]+)\] (?P<codes>.*?) - (?P<method>[A-Z]+) (?P<scheme>\S+) (?P<host>\S+) '
     r'"(?P<uri>.*)" \[Client (?P<client>[^\]]+)\] \[Length (?P<length>\d+)\]'
+    r'(?: \[Gzip (?P<gzip>[^\]]*)\])?(?: \[Sent-to (?P<upstream>[^\]]*)\])?'
     r'.*?"(?P<ua>.*)" "(?P<ref>.*)"$'
 )
+# file endings that nginx can usually pack well; already packed formats are not listed
+PACKABLE = {"html", "htm", "js", "mjs", "css", "json", "geojson", "xml", "svg", "txt", "csv", "map", "md",
+            "wasm", "webmanifest", "ics", "vcf", "yaml", "yml"}
 
 KIND_RULES = [
     ("BoatSpeedy-App", re.compile(r"^BoatSpeedy", re.I)),
@@ -160,6 +164,15 @@ def db_init():
             day TEXT, host TEXT, area TEXT, path TEXT, code TEXT, client TEXT, net TEXT, kind TEXT,
             bytes INTEGER, requests INTEGER,
             PRIMARY KEY (day, host, area, path, code, client, kind));
+        CREATE TABLE IF NOT EXISTS daily_referers (
+            day TEXT, host TEXT, referer TEXT, kind TEXT, bytes INTEGER, requests INTEGER,
+            PRIMARY KEY (day, host, referer, kind));
+        CREATE TABLE IF NOT EXISTS daily_upstreams (
+            day TEXT, host TEXT, upstream TEXT, kind TEXT, bytes INTEGER, requests INTEGER,
+            PRIMARY KEY (day, host, upstream, kind));
+        CREATE TABLE IF NOT EXISTS daily_gzip (
+            day TEXT, host TEXT, path TEXT, kind TEXT, bytes INTEGER, orig INTEGER,
+            PRIMARY KEY (day, host, path, kind));
         CREATE TABLE IF NOT EXISTS files (
             base TEXT PRIMARY KEY, inode INTEGER, offset INTEGER, head TEXT);
         CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
@@ -593,9 +606,30 @@ def parse_line(line):
     ts = int(t.timestamp()) // 3600 * 3600
     local = datetime.fromtimestamp(ts, TZ)
     client = m["client"].strip()
+    host = m["host"].lower()
+    ref = m["ref"].strip()
+    if ref in ("", "-"):
+        ref = ""
+    else:
+        try:
+            u = urlparse(ref)
+            ref = u.hostname or "?"
+            if u.scheme not in ("http", "https"):
+                ref = f"{u.scheme}://{ref}"  # e.g. android-app://com.example
+            ref = ref[:100]
+        except ValueError:
+            ref = "?"
+        if ref == host:
+            ref = "="  # same domain: a page or file loaded from the own site
+    try:
+        ratio = float(m["gzip"]) if m["gzip"] not in (None, "", "-") else 0.0
+    except ValueError:
+        ratio = 0.0
+    upstream = (m["upstream"] or "").strip()
     return {
         "ts": ts, "day": local.strftime("%Y-%m-%d"), "hod": local.hour,
-        "host": m["host"].lower(), "area": area, "path": short,
+        "host": host, "area": area, "path": short, "ref": ref, "ratio": ratio,
+        "upstream": "" if upstream == "-" else upstream[:100],
         "kind": classify(m["ua"]), "code": code, "status": code[0] + "xx",
         "net": net_of(client), "client": client, "cc": country_of(client), "bytes": int(m["length"]),
     }
@@ -617,9 +651,10 @@ class Batch:
     """Figures of the lines read in one run. only_pc: only visitor IPs per path (catching up old logs).
     Large runs write their rows in between, the commit at the end of ingest() still covers everything."""
 
-    def __init__(self, con, only_pc=False):
-        self.con, self.only_pc = con, only_pc
+    def __init__(self, con, only=None):
+        self.con, self.only = con, only  # only: set of tables to fill (catching up), None: all
         self.hourly, self.paths, self.clients, self.countries, self.errors, self.pclients = {}, {}, {}, {}, {}, {}
+        self.referers, self.upstreams, self.gzip = {}, {}, {}
         self.lines, self.days = 0, set()
         self.base, self.hosts = None, {}  # log file being read, domain -> its log file
 
@@ -629,10 +664,20 @@ class Batch:
             return
         self.lines += 1
         day, host, kind, size = r["day"], r["host"], r["kind"], r["bytes"]
-        bump(self.pclients, (day, host, r["area"], r["path"], r["code"], r["client"], r["net"], kind), size)
+        only = self.only
+        if not only or "daily_path_clients" in only:
+            bump(self.pclients, (day, host, r["area"], r["path"], r["code"], r["client"], r["net"], kind), size)
+        if not only or "daily_referers" in only:
+            bump(self.referers, (day, host, r["ref"], kind), size)
+        if not only or "daily_upstreams" in only:
+            bump(self.upstreams, (day, host, r["upstream"], kind), size)
+        if r["ratio"] and (not only or "daily_gzip" in only):
+            v = self.gzip.setdefault((day, host, r["path"], kind), [0, 0])
+            v[0] += size
+            v[1] += round(size * r["ratio"])
         if len(self.pclients) + len(self.clients) > 200000:
             self.write_rows()
-        if self.only_pc:
+        if only:
             self.days.add(day)
             return
         self.hosts[host] = self.base
@@ -646,10 +691,13 @@ class Batch:
 
     def write_rows(self):
         con = self.con
-        for table, rows in (("hourly", self.hourly), ("daily_paths", self.paths), ("daily_clients", self.clients),
-                            ("daily_countries", self.countries), ("daily_path_clients", self.pclients)):
+        for table, rows, cols in (
+                ("hourly", self.hourly, None), ("daily_paths", self.paths, None), ("daily_clients", self.clients, None),
+                ("daily_countries", self.countries, None), ("daily_path_clients", self.pclients, None),
+                ("daily_referers", self.referers, None), ("daily_upstreams", self.upstreams, None),
+                ("daily_gzip", self.gzip, "bytes, orig")):
             if rows:
-                upsert(con, table, [k + tuple(v) for k, v in rows.items()])
+                upsert(con, table, [k + tuple(v) for k, v in rows.items()], cols or "bytes, requests")
                 rows.clear()
         if self.errors:
             upsert(con, "daily_errors", [k + (v,) for k, v in self.errors.items()], "requests")
@@ -702,10 +750,10 @@ def rotated_of(base):
     return [p for n, p in sorted((n, p) for n, p in found if n is not None)][::-1]
 
 
-def backfill_path_clients(con, bases, known):
-    """Database of version 0.1.4 or older: visitor IPs per path were not stored yet. Reads the NPM logs
-    that are still there once more, but only up to where they were already counted, and only for this table."""
-    batch = Batch(con, only_pc=True)
+def backfill(con, bases, known, tables):
+    """Tables that older versions did not fill yet: reads the NPM logs that are still there once more,
+    but only up to where they were already counted, and only for these tables. Returns the first day found."""
+    batch = Batch(con, only=set(tables))
     for base in bases:
         prev = known.get(base)
         try:
@@ -728,9 +776,12 @@ def ingest():
     first_run = con.execute("SELECT value FROM meta WHERE key='backfilled'").fetchone() is None
     known = {r[0]: r[1:] for r in con.execute("SELECT base, inode, offset, head FROM files")}
     bases = sorted(glob(os.path.join(LOG_DIR, "proxy-host-*_access.log")))
-    if con.execute("SELECT 1 FROM meta WHERE key='pc_since'").fetchone() is None:
-        since = "" if first_run else backfill_path_clients(con, bases, known)  # "": complete from the start
-        con.execute("INSERT OR REPLACE INTO meta VALUES ('pc_since', ?)", (since,))
+    # tables added later: (meta key, tables), the key holds the first day they are complete from ("" = always)
+    for key, tables in (("pc_since", ["daily_path_clients"]),
+                        ("v018_since", ["daily_referers", "daily_upstreams", "daily_gzip"])):
+        if con.execute("SELECT 1 FROM meta WHERE key = ?", (key,)).fetchone() is None:
+            since = "" if first_run else backfill(con, bases, known, tables)
+            con.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)", (key, since))
     if not first_run and not con.execute("SELECT 1 FROM file_hosts LIMIT 1").fetchone():
         # database of version 0.1.2 or older: find out once which domains share a proxy host
         now = int(time.time())
@@ -764,7 +815,7 @@ def ingest():
     if first_run:
         con.execute("INSERT OR REPLACE INTO meta VALUES ('backfilled', ?)", (str(int(time.time())),))
     cutoff = (datetime.now(TZ) - timedelta(days=DETAIL_DAYS)).strftime("%Y-%m-%d")
-    for table in ("daily_paths", "daily_clients", "daily_errors", "daily_path_clients"):
+    for table in ("daily_paths", "daily_clients", "daily_errors", "daily_path_clients", "daily_referers", "daily_gzip"):
         con.execute(f"DELETE FROM {table} WHERE day < ?", (cutoff,))
     con.commit()
     load_sites(con)
@@ -1027,6 +1078,41 @@ def summary(q):
         providers = sorted(by.values(), key=lambda v: -v["bytes"])[:50]
 
     total["visitors"] = len(clients)
+
+    # where visitors come from: "" = typed in / app / bookmark, "=" = from the own site
+    refs = {}
+    for h, ref, b, r in one(f"SELECT {hcol}, referer, SUM(bytes), SUM(requests) FROM daily_referers "
+                            f"WHERE {dwhere} GROUP BY 1, 2", dargs):
+        if ref and ref != "=" and site_of(ref) == site_of(h):
+            ref = "="  # another domain of the same proxy host
+        v = refs.setdefault(ref, {"name": ref, "bytes": 0, "requests": 0})
+        v["bytes"] += b; v["requests"] += r
+    referers = sorted(refs.values(), key=lambda v: -v["requests"])[:50]
+
+    upstreams = [{"name": r[0], "bytes": r[1], "requests": r[2], "sub": r[3]} for r in one(
+        f"SELECT upstream, SUM(bytes), SUM(requests), GROUP_CONCAT(DISTINCT {hcol}) FROM daily_upstreams "
+        f"WHERE {dwhere} GROUP BY 1 ORDER BY 2 DESC LIMIT 25", dargs)]
+
+    # compression: what nginx packed (and the size before), what went out unpacked although it could be packed
+    packed = {(r[0], r[1]): (r[2], r[3]) for r in one(
+        f"SELECT {hcol}, path, SUM(bytes), SUM(orig) FROM daily_gzip WHERE {dwhere} GROUP BY 1, 2", dargs)}
+    unpacked, plain, sent = [], 0, 0
+    for h, path, b, r in one(f"SELECT {hcol}, path, SUM(bytes), SUM(requests) FROM daily_paths "
+                             f"WHERE {dwhere} GROUP BY 1, 2", dargs):
+        sent += b
+        rest = b - packed.get((h, path), (0, 0))[0]
+        last = path.rsplit("/", 1)[-1]
+        if rest > 0 and "." in last and last.rsplit(".", 1)[-1].lower() in PACKABLE:
+            plain += rest
+            unpacked.append({"host": h, "name": path, "bytes": rest, "requests": r})
+    unpacked.sort(key=lambda v: -v["bytes"])
+    gz_sent = sum(v[0] for v in packed.values())
+    gz_orig = sum(v[1] for v in packed.values())
+    gzip_info = {"sent": sent, "packed": gz_sent, "orig": gz_orig,
+                 "plain": plain, "unpacked": unpacked[:LIMIT]}
+    since = one("SELECT value FROM meta WHERE key = 'v018_since'", [])
+    v018 = since[0][0] if since and since[0][0] and since[0][0] > p.detail_day else None
+
     result = {
         "days": p.days, "host": p.host, "bots": p.bots, "hourly": p.hourly, "step": "hour" if p.hourly else step,
         "custom": p.custom, "from": p.start_day, "to": p.end_day, "bots_share": bots_share, "week": week,
@@ -1040,6 +1126,7 @@ def summary(q):
             f"SELECT {hcol}, area, SUM(bytes), SUM(requests) FROM hourly WHERE {where} "
             "GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 25", args)],
         "statuses": breakdown("status"), "nets": breakdown("net"),
+        "referers": referers, "upstreams": upstreams, "gzip": gzip_info, "v018_since": v018,
         "hod": hod, "paths": paths, "errors": errors, "clients": clients[:LIMIT], "providers": providers,
         "countries": [{"name": r[0], "bytes": r[1], "requests": r[2]} for r in one(
             f"SELECT country, SUM(bytes), SUM(requests) FROM daily_countries WHERE {dwhere} "
@@ -1122,7 +1209,8 @@ def clear_host(host, group=True):
         con = db_connect()
         b, r = con.execute(f"SELECT COALESCE(SUM(bytes),0), COALESCE(SUM(requests),0) FROM hourly WHERE {col} = ?",
                            (host,)).fetchone()
-        for table in ("hourly", "daily_paths", "daily_clients", "daily_countries", "daily_errors", "daily_path_clients"):
+        for table in ("hourly", "daily_paths", "daily_clients", "daily_countries", "daily_errors", "daily_path_clients",
+                      "daily_referers", "daily_upstreams", "daily_gzip"):
             con.execute(f"DELETE FROM {table} WHERE {col} = ?", (host,))
         con.commit()
         con.close()

@@ -304,8 +304,9 @@ const barKey = (r) => (r.sub || "") + "\n" + r.name;
 
 function barsHtml(rows, opts = {}) {
   if (!rows.length) return `<div class="empty">${t("empty")}</div>`;
-  const total = opts.total ?? rows.reduce((a, r) => a + r.bytes, 0);
-  const top = rows[0].bytes || 1;
+  const val = (r) => (opts.count ? r.requests : r.bytes);  // count: bars by requests instead of data
+  const total = opts.total ?? rows.reduce((a, r) => a + val(r), 0);
+  const top = Math.max(...rows.map(val)) || 1;
   return rows.slice(0, opts.limit || 8).map((r, i) => {
     const name = opts.label ? opts.label(r) : r.name;
     const sel = opts.selected && opts.selected === r.name ? " sel" : "";
@@ -315,8 +316,9 @@ function barsHtml(rows, opts = {}) {
     const detail = open ? `<div class="bar-detail">${opts.open.get(key) || `<span class="empty">${t("loading_short")}</span>`}</div>` : "";
     return `<div class="bar-row${opts.click || opts.expand ? " click" : ""}${open ? " open" : ""}${sel}" data-name="${esc(r.name)}"${exp} title="${t("n_requests", { n: nf.format(r.requests) })}">
       <span class="n">${esc(name)}${opts.sub && r.sub ? `<small>${esc(r.sub)}</small>` : ""}</span>
-      <span class="v">${r.bytes ? fmtBytes(r.bytes) + " · " + pct(r.bytes, total) : t("n_requests_no_data", { n: nf.format(r.requests) })}${esc(extra)}</span>
-      <div class="track"><div class="fill" style="width:${(r.bytes / top) * 100}%;background:${color(opts.mono ? 0 : i)}"></div></div>
+      <span class="v">${opts.count ? t("n_requests", { n: nf.format(r.requests) }) + " · " + pct(r.requests, total)
+        : r.bytes ? fmtBytes(r.bytes) + " · " + pct(r.bytes, total) : t("n_requests_no_data", { n: nf.format(r.requests) })}${esc(extra)}</span>
+      <div class="track"><div class="fill" style="width:${(val(r) / top) * 100}%;background:${color(opts.mono ? 0 : i)}"></div></div>
     </div>${detail}`;
   }).join("");
 }
@@ -370,6 +372,20 @@ function renderHeat(week) {
   });
   h += `<div class="hours">${t("hod_axis").map((l) => `<span>${l}</span>`).join("")}</div>`;
   $("heat").innerHTML = h;
+}
+
+// compression: key figures and the files that went out unpacked
+function renderGzip(d, since) {
+  const g = d.gzip;
+  $("gzip-kpis").innerHTML = `
+    <div><span class="label">${t("gzip_packed")}</span><b>${fmtBytes(g.packed)}</b><span class="hint">${esc(t("gzip_of", { p: pct(g.packed, g.sent), v: fmtBytes(g.sent) }))}</span></div>
+    <div><span class="label">${t("gzip_saved")}</span><b>${fmtBytes(Math.max(0, g.orig - g.packed))}</b><span class="hint">${esc(t("gzip_was", { v: fmtBytes(g.orig) }))}</span></div>
+    <div><span class="label">${t("gzip_plain")}</span><b>${fmtBytes(g.plain)}</b><span class="hint">${esc(t("gzip_of", { p: pct(g.plain, g.sent), v: fmtBytes(g.sent) }))}</span></div>`;
+  dataTable("t-unpacked", [
+    { key: "name", label: "col_path", value: (r) => r.name, cls: "path", html: (r) => pathCell(r, d) },
+    ...sizeCols,
+  ], g.unpacked, { key: (r) => r.host + "\n" + r.name, sort: "bytes", placeholder: "search_paths", search: (r) => r.name + " " + r.host });
+  $("gzip-note").textContent = t("gzip_note") + since;
 }
 
 // share of bot requests per chart column
@@ -656,6 +672,14 @@ function render(d) {
   renderBars("b-nets", d.nets);
   renderHod(d.hod);
   renderHeat(d.week);
+  const since = d.v018_since ? " " + t("v018_since", { d: fullDate(d.v018_since) }) : "";
+  const refName = (r) => (r.name === "" ? t("ref_direct") : r.name === "=" ? t("ref_internal") : r.name === "?" ? t("ref_unknown") : r.name);
+  renderBars("b-referers", d.referers, { limit: 12, mono: true, count: true, label: refName });
+  $("referers-note").textContent = t("referers_note") + since;
+  renderBars("b-upstreams", d.upstreams.map((r) => ({ ...r, sub: d.host ? "" : (r.sub || "").split(",").map(siteOf).filter((x, i, a) => a.indexOf(x) === i).join(", ") })),
+    { limit: 12, mono: true, sub: true, label: (r) => r.name || t("upstream_none") });
+  $("upstreams-note").textContent = t("upstreams_note") + since;
+  renderGzip(d, since);
   renderShare(d);
   renderNotes(d);
   dataTable("t-errors", [

@@ -107,6 +107,8 @@
       <section class="card"><h3 data-i18n="hod">Time of day</h3><div class="hod" id="hod"></div><p class="note" data-i18n="hod_note">Data by time of day, over the whole period</p></section>
       <section class="card"><h3 data-i18n="statuses">Responses</h3><div class="bars" id="b-status"></div></section>
       <section class="card"><h3 data-i18n="nets">LAN or internet</h3><div class="bars" id="b-nets"></div></section>
+      <section class="card"><h3 data-i18n="referers">Coming from</h3><div class="bars" id="b-referers"></div><p class="note" id="referers-note"></p></section>
+      <section class="card"><h3 data-i18n="upstreams">Target servers</h3><div class="bars" id="b-upstreams"></div><p class="note" id="upstreams-note"></p></section>
     </div>
     <section class="card wide">
       <h3 data-i18n="week_heat">Weekday and time of day</h3>
@@ -160,6 +162,13 @@
 
   <section class="page" data-page="paths" hidden>
     <h2 class="page-title" data-i18n="page_paths">Files and paths</h2>
+    <section class="card wide">
+      <h3 data-i18n="gzip">Compression</h3>
+      <div class="mini-kpis" id="gzip-kpis"></div>
+      <p class="sub-head" data-i18n="gzip_unpacked">Sent unpacked although packable</p>
+      <div id="t-unpacked"></div>
+      <p class="note" id="gzip-note"></p>
+    </section>
     <section class="card wide"><h3 data-i18n="top_paths">Largest files and paths</h3><div id="t-paths"></div></section>
   </section>
 
