@@ -374,6 +374,70 @@ function renderHeat(week) {
   $("heat").innerHTML = h;
 }
 
+// versions per app (from the user agent), bots left out
+function renderApps(d) {
+  const ver = (v) => ({ ...v, name: v.name || t("version_none") });
+  $("apps").innerHTML = d.apps.length ? d.apps.map((a) => `<div>
+      <p class="sub-head"><b>${esc(a.name)}</b><span>${esc(t("n_requests", { n: nf.format(a.requests) }))}</span></p>
+      <div class="bars">${barsHtml(a.versions.map(ver), { mono: true, count: true, limit: 6 })}</div></div>`).join("")
+    : `<div class="empty">${t("apps_none")}</div>`;
+  $("apps-note").textContent = t("apps_note");
+}
+
+// settings page: apps seen in the last 30 days, set up as own client type
+let appsSetup = null, appsEditing = "";
+
+async function loadApps() {
+  appsSetup = await getJSON(`api/apps?days=30&${filterParams().replace(/bots=0/, "bots=1")}`);
+  renderAppsSetup();
+}
+
+function renderAppsSetup() {
+  const el = $("apps-table"), s = appsSetup;
+  if (!s) return;
+  if (!s.apps.length) { el.innerHTML = `<tr><td class="empty">${t("apps_none")}</td></tr>`; return; }
+  const typeOf = (app) => s.types.find((x) => (x.app || "").toLowerCase() === app.toLowerCase());
+  el.innerHTML = `<thead><tr><th>${t("col_app")}</th><th class="wide-only">${t("col_versions")}</th><th>${t("col_counted")}</th>`
+    + `<th class="num">${t("col_requests")}</th><th></th></tr></thead><tbody>` + s.apps.map((a) => {
+    const own = typeOf(a.name);
+    let act;
+    if (appsEditing === a.name) {
+      act = `<form class="setup-form" data-app="${esc(a.name)}"><input value="${esc(own?.name || a.name)}" maxlength="40" required>`
+        + `<button class="btn" type="submit">${t("setup_save")}</button><button class="link" type="button" data-cancel>${t("setup_cancel")}</button></form>`;
+    } else if (own) {
+      act = `<button class="link" data-remove="${esc(own.name)}">${t("setup_remove")}</button>`;
+    } else {
+      act = `<button class="btn" data-setup="${esc(a.name)}">${t("setup")}</button>`;
+    }
+    const vers = a.versions.slice(0, 3).map((v) => v.name || t("version_none")).join(", ");
+    return `<tr><td>${esc(a.name)}<span class="host">${esc(a.hosts.slice(0, 3).join(", "))}</span></td>`
+      + `<td class="wide-only">${esc(vers)}</td><td>${esc(kindName(a.kind))}</td><td class="num">${nf.format(a.requests)}</td><td class="act">${act}</td></tr>`;
+  }).join("") + "</tbody>";
+  el.querySelectorAll("[data-setup]").forEach((b) => b.addEventListener("click", () => { appsEditing = b.dataset.setup; renderAppsSetup(); el.querySelector(".setup-form input")?.focus(); }));
+  el.querySelectorAll("[data-cancel]").forEach((b) => b.addEventListener("click", () => { appsEditing = ""; renderAppsSetup(); }));
+  el.querySelectorAll("[data-remove]").forEach((b) => b.addEventListener("click", () => changeClientType({ action: "delete", name: b.dataset.remove })));
+  el.querySelectorAll(".setup-form").forEach((f) => f.addEventListener("submit", (e) => {
+    e.preventDefault();
+    changeClientType({ action: "add", app: f.dataset.app, name: f.querySelector("input").value.trim() });
+  }));
+}
+
+async function changeClientType(body) {
+  try {
+    const r = await fetch("api/client-types", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-NPMcountdy": "settings" },
+      body: JSON.stringify(body),
+    });
+    const res = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(res.error || "HTTP " + r.status);
+    appsEditing = "";
+    await loadApps();
+  } catch (e) {
+    $("apps-table").insertAdjacentHTML("afterend", `<p class="note err">${esc(e.message)}</p>`);
+  }
+}
+
 // compression: key figures and the files that went out unpacked
 function renderGzip(d, since) {
   const g = d.gzip;
@@ -680,6 +744,7 @@ function render(d) {
     { limit: 12, mono: true, sub: true, label: (r) => r.name || t("upstream_none") });
   $("upstreams-note").textContent = t("upstreams_note") + since;
   renderGzip(d, since);
+  renderApps(d);
   renderShare(d);
   renderNotes(d);
   dataTable("t-errors", [
@@ -816,7 +881,7 @@ function pageUrl(page, country = "") {
 
 function showPage() {
   document.querySelectorAll(".page").forEach((p) => (p.hidden = p.dataset.page !== state.page));
-  if (state.page === "settings") { $("set-msg").textContent = ""; loadServer().catch(() => {}); }
+  if (state.page === "settings") { $("set-msg").textContent = ""; loadServer().catch(() => {}); loadApps().catch(() => {}); }
   document.querySelectorAll(".nav a").forEach((a) => a.classList.toggle("on", a.dataset.page === state.page));
   document.title = state.page === "overview" ? "NPMcountdy" : `${t("page_" + state.page)} · NPMcountdy`;
   hideTip();

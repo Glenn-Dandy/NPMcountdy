@@ -144,6 +144,12 @@ button.link.danger:hover { text-decoration: underline; }
 .hod { display: grid; grid-template-columns: repeat(24, 1fr); align-items: end; gap: 3px; height: 130px; }
 .hod div { background: var(--c1); border-radius: 2px 2px 0 0; min-height: 2px; opacity: .85; }
 .hod div:hover { opacity: 1; }
+.apps { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px 24px; }
+.apps .sub-head { margin-top: 0; display: flex; justify-content: space-between; gap: 8px; }
+.apps .sub-head b { color: var(--text); }
+#apps-table td.act { text-align: right; white-space: nowrap; }
+#apps-table .setup-form { display: inline-flex; gap: 6px; align-items: center; }
+#apps-table .setup-form input { font: inherit; width: 150px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--text); }
 .custom-active { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin: 4px 0 0;
   padding: 6px 10px; border-radius: 8px; background: var(--accent); color: #fff; font-size: 13px; }
 .custom-active .link { color: #fff; font-size: 16px; line-height: 1; padding: 0 2px; margin: 0; }

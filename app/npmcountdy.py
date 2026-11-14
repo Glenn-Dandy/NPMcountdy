@@ -21,7 +21,7 @@ from ipaddress import ip_address, ip_network
 from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo
 
-VERSION = "0.1.8"
+VERSION = "0.1.9"
 REPO = "https://github.com/Glenn-Dandy/NPMcountdy"
 LOG_DIR = os.environ.get("LOG_DIR", "/logs")
 DB_PATH = os.environ.get("DB_PATH", "/data/npmcountdy.db")
@@ -65,12 +65,37 @@ LINE_RE = re.compile(
 PACKABLE = {"html", "htm", "js", "mjs", "css", "json", "geojson", "xml", "svg", "txt", "csv", "map", "md",
             "wasm", "webmanifest", "ics", "vcf", "yaml", "yml"}
 
-KIND_RULES = [
-    ("BoatSpeedy-App", re.compile(r"^BoatSpeedy", re.I)),
+# Client types: own ones from the settings page (table client_types) come first, then these.
+BASE_RULES = [
     ("Nextcloud-Client", re.compile(r"Nextcloud-android|Nextcloud-iOS|mirall|DAVx5|davdroid|gvfs|davfs|ownCloud", re.I)),
     (BOT, re.compile(r"bot|crawl|spider|scan|curl|wget|python|go-http|zgrab|masscan|nuclei|httpx|expanse|censys|palo ?alto|okhttp|java/|libwww|headless", re.I)),
     ("Browser", re.compile(r"Mozilla/.*(Chrome|Firefox|Safari|Edg)", re.I)),
 ]
+KIND_RULES = list(BASE_RULES)
+# Apps: the first product token of a user agent, "MyApp/1.2.3 (Android 14)" -> ("MyApp", "1.2.3")
+APP_RE = re.compile(r"^([A-Za-z][\w.\-]{0,39})(?:/([\w.\-+]{1,30}))?")
+NOT_APPS = {"mozilla", "opera"}  # browsers, they have their own client type
+
+
+def app_of(ua, kind):
+    """Also for bots: an app that a rule counts as bot (e.g. "okhttp") can be set up as own client type."""
+    if kind == "Browser":
+        return None
+    m = APP_RE.match(ua.strip())
+    if not m or m.group(1).lower() in NOT_APPS:
+        return None
+    return m.group(1), m.group(2) or ""
+
+
+def app_pattern(app):
+    return "^" + re.escape(app) + r"(?:/|\s|$)"
+
+
+def load_client_types(con):
+    global KIND_RULES
+    rules = [(n, re.compile(p, re.I)) for n, p in con.execute("SELECT name, pattern FROM client_types ORDER BY pos")]
+    KIND_RULES = rules + BASE_RULES  # replaced as a whole, classify() never sees a half list
+
 
 state_lock = threading.Lock()
 wake = threading.Event()  # set to read the logs before the interval is over
@@ -170,6 +195,10 @@ def db_init():
         CREATE TABLE IF NOT EXISTS daily_upstreams (
             day TEXT, host TEXT, upstream TEXT, kind TEXT, bytes INTEGER, requests INTEGER,
             PRIMARY KEY (day, host, upstream, kind));
+        CREATE TABLE IF NOT EXISTS daily_apps (
+            day TEXT, host TEXT, app TEXT, version TEXT, kind TEXT, bytes INTEGER, requests INTEGER,
+            PRIMARY KEY (day, host, app, version, kind));
+        CREATE TABLE IF NOT EXISTS client_types (pos INTEGER, name TEXT PRIMARY KEY, pattern TEXT, app TEXT);
         CREATE TABLE IF NOT EXISTS daily_gzip (
             day TEXT, host TEXT, path TEXT, kind TEXT, bytes INTEGER, orig INTEGER,
             PRIMARY KEY (day, host, path, kind));
@@ -192,8 +221,15 @@ def db_init():
             con.execute(f"INSERT INTO {table} SELECT {copy} FROM {table}_old")
             con.execute(f"DROP TABLE {table}_old")
             con.execute("INSERT OR IGNORE INTO meta VALUES ('detail_since', ?)", (today,))
+    if con.execute("SELECT 1 FROM meta WHERE key = 'kinds_moved'").fetchone() is None:
+        # up to 0.1.8 "BoatSpeedy-App" was built in; keep it as an own client type where it was seen
+        if con.execute("SELECT 1 FROM hourly WHERE kind = 'BoatSpeedy-App' LIMIT 1").fetchone():
+            con.execute("INSERT OR IGNORE INTO client_types VALUES (0, 'BoatSpeedy-App', ?, 'BoatSpeedy')",
+                        (app_pattern("BoatSpeedy"),))
+        con.execute("INSERT INTO meta VALUES ('kinds_moved', '1')")
     con.commit()
     load_sites(con)
+    load_client_types(con)
     con.close()
 
 
@@ -628,7 +664,7 @@ def parse_line(line):
     upstream = (m["upstream"] or "").strip()
     return {
         "ts": ts, "day": local.strftime("%Y-%m-%d"), "hod": local.hour,
-        "host": host, "area": area, "path": short, "ref": ref, "ratio": ratio,
+        "host": host, "area": area, "path": short, "ref": ref, "ratio": ratio, "ua": m["ua"][:200],
         "upstream": "" if upstream == "-" else upstream[:100],
         "kind": classify(m["ua"]), "code": code, "status": code[0] + "xx",
         "net": net_of(client), "client": client, "cc": country_of(client), "bytes": int(m["length"]),
@@ -654,7 +690,7 @@ class Batch:
     def __init__(self, con, only=None):
         self.con, self.only = con, only  # only: set of tables to fill (catching up), None: all
         self.hourly, self.paths, self.clients, self.countries, self.errors, self.pclients = {}, {}, {}, {}, {}, {}
-        self.referers, self.upstreams, self.gzip = {}, {}, {}
+        self.referers, self.upstreams, self.gzip, self.apps = {}, {}, {}, {}
         self.lines, self.days = 0, set()
         self.base, self.hosts = None, {}  # log file being read, domain -> its log file
 
@@ -671,6 +707,10 @@ class Batch:
             bump(self.referers, (day, host, r["ref"], kind), size)
         if not only or "daily_upstreams" in only:
             bump(self.upstreams, (day, host, r["upstream"], kind), size)
+        if not only or "daily_apps" in only:
+            app = app_of(r["ua"], kind)
+            if app:
+                bump(self.apps, (day, host, app[0], app[1], kind), size)
         if r["ratio"] and (not only or "daily_gzip" in only):
             v = self.gzip.setdefault((day, host, r["path"], kind), [0, 0])
             v[0] += size
@@ -695,6 +735,7 @@ class Batch:
                 ("hourly", self.hourly, None), ("daily_paths", self.paths, None), ("daily_clients", self.clients, None),
                 ("daily_countries", self.countries, None), ("daily_path_clients", self.pclients, None),
                 ("daily_referers", self.referers, None), ("daily_upstreams", self.upstreams, None),
+                ("daily_apps", self.apps, None),
                 ("daily_gzip", self.gzip, "bytes, orig")):
             if rows:
                 upsert(con, table, [k + tuple(v) for k, v in rows.items()], cols or "bytes, requests")
@@ -778,7 +819,8 @@ def ingest():
     bases = sorted(glob(os.path.join(LOG_DIR, "proxy-host-*_access.log")))
     # tables added later: (meta key, tables), the key holds the first day they are complete from ("" = always)
     for key, tables in (("pc_since", ["daily_path_clients"]),
-                        ("v018_since", ["daily_referers", "daily_upstreams", "daily_gzip"])):
+                        ("v018_since", ["daily_referers", "daily_upstreams", "daily_gzip"]),
+                        ("apps_since", ["daily_apps"])):
         if con.execute("SELECT 1 FROM meta WHERE key = ?", (key,)).fetchone() is None:
             since = "" if first_run else backfill(con, bases, known, tables)
             con.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)", (key, since))
@@ -1127,6 +1169,7 @@ def summary(q):
             "GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 25", args)],
         "statuses": breakdown("status"), "nets": breakdown("net"),
         "referers": referers, "upstreams": upstreams, "gzip": gzip_info, "v018_since": v018,
+        "apps": [a for a in apps_info(q)["apps"] if a["kind"] != BOT][:12],
         "hod": hod, "paths": paths, "errors": errors, "clients": clients[:LIMIT], "providers": providers,
         "countries": [{"name": r[0], "bytes": r[1], "requests": r[2]} for r in one(
             f"SELECT country, SUM(bytes), SUM(requests) FROM daily_countries WHERE {dwhere} "
@@ -1201,6 +1244,61 @@ def path_clients(q):
             "since": since[0] if since and since[0] > p.detail_day else None}
 
 
+def apps_info(q):
+    """Apps seen in the range (first product token of the user agent) with their versions and client types."""
+    p = Period(q)
+    con = db_connect()
+    rows = con.execute(f"SELECT app, version, kind, GROUP_CONCAT(DISTINCT {p.hcol}), SUM(bytes), SUM(requests) "
+                       f"FROM daily_apps WHERE {p.dwhere} GROUP BY 1, 2, 3", p.dargs).fetchall()
+    types = [{"name": n, "app": a, "pattern": pt} for n, a, pt in
+             con.execute("SELECT name, app, pattern FROM client_types ORDER BY pos")]
+    since = con.execute("SELECT value FROM meta WHERE key = 'apps_since'").fetchone()
+    con.close()
+    apps = {}
+    for app, version, kind, hosts, b, r in rows:
+        a = apps.setdefault(app.lower(), {"name": app, "bytes": 0, "requests": 0, "versions": {}, "kinds": {}, "hosts": set()})
+        a["bytes"] += b; a["requests"] += r
+        v = a["versions"].setdefault(version, {"name": version, "bytes": 0, "requests": 0})
+        v["bytes"] += b; v["requests"] += r
+        a["kinds"][kind] = a["kinds"].get(kind, 0) + r
+        a["hosts"].update((hosts or "").split(","))
+    out = []
+    for a in sorted(apps.values(), key=lambda a: -a["requests"])[:50]:
+        a["versions"] = sorted(a["versions"].values(), key=lambda v: -v["requests"])[:20]
+        own = next((t["name"] for t in types if (t["app"] or "").lower() == a["name"].lower()), None)
+        a["kind"] = own or max(a["kinds"], key=a["kinds"].get)  # own type, or the one most requests were counted as
+        a["hosts"] = sorted(h for h in a["hosts"] if h)
+        del a["kinds"]
+        out.append(a)
+    return {"apps": out, "types": types, "since": since[0] if since and since[0] > p.detail_day else None}
+
+
+def change_client_type(body):
+    """add: own client type for an app (name, app), delete: remove one (name). Applies to new log lines."""
+    action, name = body.get("action"), str(body.get("name", "")).strip()[:40]
+    app = str(body.get("app", "")).strip()[:40]
+    if not name:
+        raise ValueError("name: missing")
+    if action not in ("add", "delete"):
+        raise ValueError("action must be add or delete")
+    if action == "add" and not APP_RE.fullmatch(app):
+        raise ValueError("app: invalid")
+    if action == "add" and (name == "Sonstige" or any(name == n for n, _ in BASE_RULES)):
+        raise ValueError("name: already a built-in client type")
+    with db_lock:
+        con = db_connect()
+        if action == "add":
+            con.execute("DELETE FROM client_types WHERE app = ? COLLATE NOCASE", (app,))
+            pos = con.execute("SELECT COALESCE(MAX(pos), 0) + 1 FROM client_types").fetchone()[0]
+            con.execute("INSERT OR REPLACE INTO client_types VALUES (?, ?, ?, ?)", (pos, name, app_pattern(app), app))
+        else:
+            con.execute("DELETE FROM client_types WHERE name = ?", (name,))
+        con.commit()
+        load_client_types(con)
+        con.close()
+    return apps_info({"days": ["30"]})
+
+
 def clear_host(host, group=True):
     """Deletes all stored figures of a domain (grouped: all domains of its proxy host).
     The NPM log files stay untouched."""
@@ -1210,7 +1308,7 @@ def clear_host(host, group=True):
         b, r = con.execute(f"SELECT COALESCE(SUM(bytes),0), COALESCE(SUM(requests),0) FROM hourly WHERE {col} = ?",
                            (host,)).fetchone()
         for table in ("hourly", "daily_paths", "daily_clients", "daily_countries", "daily_errors", "daily_path_clients",
-                      "daily_referers", "daily_upstreams", "daily_gzip"):
+                      "daily_referers", "daily_upstreams", "daily_gzip", "daily_apps"):
             con.execute(f"DELETE FROM {table} WHERE {col} = ?", (host,))
         con.commit()
         con.close()
@@ -1259,6 +1357,7 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         api = {"/api/summary": lambda: summary(parse_qs(u.query)), "/api/client": lambda: client_detail(parse_qs(u.query)),
                "/api/requesters": lambda: path_clients(parse_qs(u.query)), "/api/settings": settings_info,
+               "/api/apps": lambda: apps_info(parse_qs(u.query)),
                "/api/meta": meta, "/api/update": lambda: update_now(parse_qs(u.query))}
         for path, fn in api.items():
             if u.path.endswith(path):
@@ -1278,14 +1377,16 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         err = lambda code, msg: self.send(code, json.dumps({"error": msg}).encode(), "application/json")
-        if urlparse(self.path).path.endswith("/api/settings"):
+        path = urlparse(self.path).path
+        if path.endswith("/api/settings") or path.endswith("/api/client-types"):
             if self.headers.get("X-NPMcountdy") != "settings":
                 return err(403, "Only from the UI")
             try:
                 body = json.loads(self.rfile.read(min(int(self.headers.get("Content-Length") or 0), 4096)) or b"{}")
                 if not isinstance(body, dict):
                     raise ValueError("Invalid request")
-                return self.send(200, json.dumps(save_settings(body)).encode(), "application/json")
+                res = save_settings(body) if path.endswith("/api/settings") else change_client_type(body)
+                return self.send(200, json.dumps(res).encode(), "application/json")
             except (ValueError, TypeError) as e:
                 return err(400, str(e))
             except OSError as e:
