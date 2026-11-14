@@ -26,6 +26,7 @@ const langPref = I18N[store.get("lang", "")] ? store.get("lang", "") : "auto";  
 const state = {
   days: Number(store.get("days", "7")) || 7, host: store.get("host", ""),
   bots: store.get("bots", "1") !== "0",  // bots are counted unless switched off
+  lan: store.get("lan", "1") !== "0",  // requests from the home network, counted unless switched off
   group: store.get("group", "1") !== "0",  // domains of one NPM proxy host shown as one
   step: "",  // chart columns chosen by hand, empty: automatic
   langPref, lang: langPref === "auto" ? browserLang() : langPref,
@@ -85,7 +86,7 @@ const withMembers = (name) => (otherMembers(name) ? t("with_members", { host: na
 const rangeParams = () => (state.from ? `from=${state.from}&to=${state.to}` : `days=${state.days}`);
 // number of days shown, also for dates chosen by hand
 const rangeDays = () => (state.from ? Math.round((Date.parse(state.to) - Date.parse(state.from)) / 864e5) + 1 : state.days);
-const filterParams = () => `host=${encodeURIComponent(state.host)}&bots=${state.bots ? 1 : 0}&group=${state.group ? 1 : 0}`;
+const filterParams = () => `host=${encodeURIComponent(state.host)}&bots=${state.bots ? 1 : 0}&lan=${state.lan ? 1 : 0}&group=${state.group ? 1 : 0}`;
 
 async function getJSON(url) {
   const r = await fetch(url);
@@ -376,18 +377,26 @@ function renderHeat(week) {
 
 // versions per app (from the user agent), bots left out
 function renderApps(d) {
-  const ver = (v) => ({ ...v, name: v.name || t("version_none") });
+  const id = (a) => "app-" + a.name.replace(/[^\w-]/g, "_");
   $("apps").innerHTML = d.apps.length ? d.apps.map((a) => `<div>
-      <p class="sub-head"><b>${esc(a.name)}</b><span>${esc(t("n_requests", { n: nf.format(a.requests) }))}</span></p>
-      <div class="bars">${barsHtml(a.versions.map(ver), { mono: true, count: true, limit: 6 })}</div></div>`).join("")
+      <p class="sub-head"><b>${esc(a.name)}</b><span>${esc(fmtBytes(a.bytes) + " · " + t("n_requests", { n: nf.format(a.requests) }))}</span></p>
+      <div class="bars" id="${id(a)}"></div></div>`).join("")
     : `<div class="empty">${t("apps_none")}</div>`;
+  for (const a of d.apps) {
+    const versions = [...a.versions].sort((x, y) => y.bytes - x.bytes);
+    renderBars(id(a), versions, {
+      mono: true, limit: 8, label: (v) => v.name || t("version_none"),
+      extra: (v) => t("n_requests", { n: nf.format(v.requests) }),
+      expand: (v) => requestersDetail("version", { ...v, app: a.name }),
+    });
+  }
 }
 
 // settings page: apps seen in the last 30 days, set up as own client type
 let appsSetup = null, appsEditing = "";
 
 async function loadApps() {
-  appsSetup = await getJSON(`api/apps?days=30&${filterParams().replace(/bots=0/, "bots=1")}`);
+  appsSetup = await getJSON(`api/apps?days=30&${filterParams().replace(/bots=0/, "bots=1").replace(/lan=0/, "lan=1")}`);
   renderAppsSetup();
 }
 
@@ -604,7 +613,7 @@ async function visitorDetail(ip) {
 
 // visitor IPs behind a failed request (by "error"), a path (by "path") or an area (by "area")
 async function requestersDetail(by, r) {
-  const q = `by=${by}&of=${encodeURIComponent(r.host ?? r.sub ?? "")}&name=${encodeURIComponent(r.name)}`
+  const q = `by=${by}&of=${encodeURIComponent(r.host ?? r.sub ?? "")}&name=${encodeURIComponent(r.name)}&app=${encodeURIComponent(r.app || "")}`
     + `&code=${encodeURIComponent(r.status || "")}&${rangeParams()}&${filterParams()}`;
   const d = await getJSON("api/requesters?" + q);
   if (d.error) throw new Error(d.error);
@@ -794,6 +803,9 @@ function renderNotes(d) {
   const old = since && d.start_day < since;
   $("bots-note").hidden = !(old && !state.bots);
   $("bots-note").textContent = t("bots_note", { d: since ? fullDate(since) : "" });
+  const netSince = state.meta?.net_since;
+  $("lan-note").hidden = !(netSince && d.start_day < netSince && !state.lan);
+  $("lan-note").textContent = t("lan_note", { d: netSince ? fullDate(netSince) : "" });
   $("errors-note").textContent = t("errors_note") + (old ? " " + t("errors_since", { d: fullDate(since) }) : "");
 }
 
@@ -1072,6 +1084,7 @@ async function load() {
   $("custom-text").textContent = state.from === state.to ? fullDate(state.from)
     : t("range_text", { a: fullDate(state.from), b: fullDate(state.to) });
   $("bots").checked = state.bots;
+  $("lan").checked = state.lan;
   $("group").checked = state.group;
   try {
     const q = `${rangeParams()}&country=${encodeURIComponent(state.country)}&${filterParams()}&step=${chartStep()}`;
@@ -1099,6 +1112,12 @@ document.querySelectorAll("#step button").forEach((b) => b.addEventListener("cli
 $("bots").addEventListener("change", (e) => {
   state.bots = e.target.checked;
   store.set("bots", state.bots ? "1" : "0");
+  closeDetails();
+  load();
+});
+$("lan").addEventListener("change", (e) => {
+  state.lan = e.target.checked;
+  store.set("lan", state.lan ? "1" : "0");
   closeDetails();
   load();
 });

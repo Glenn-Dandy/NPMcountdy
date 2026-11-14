@@ -21,7 +21,7 @@ from ipaddress import ip_address, ip_network
 from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo
 
-VERSION = "0.1.10"
+VERSION = "0.1.11"
 REPO = "https://github.com/Glenn-Dandy/NPMcountdy"
 LOG_DIR = os.environ.get("LOG_DIR", "/logs")
 DB_PATH = os.environ.get("DB_PATH", "/data/npmcountdy.db")
@@ -172,6 +172,10 @@ def scan_hosts(base):
     return found
 
 
+# daily tables that got the column net (LAN or internet) in 0.1.11
+NET_TABLES = ["daily_paths", "daily_countries", "daily_errors", "daily_referers", "daily_upstreams", "daily_gzip", "daily_apps"]
+
+
 def db_init():
     os.makedirs(DATA_DIR, exist_ok=True)
     con = db_connect()
@@ -198,6 +202,9 @@ def db_init():
         CREATE TABLE IF NOT EXISTS daily_apps (
             day TEXT, host TEXT, app TEXT, version TEXT, kind TEXT, bytes INTEGER, requests INTEGER,
             PRIMARY KEY (day, host, app, version, kind));
+        CREATE TABLE IF NOT EXISTS daily_app_clients (
+            day TEXT, host TEXT, app TEXT, version TEXT, client TEXT, net TEXT, kind TEXT, bytes INTEGER, requests INTEGER,
+            PRIMARY KEY (day, host, app, version, client, kind));
         CREATE TABLE IF NOT EXISTS client_types (pos INTEGER, name TEXT PRIMARY KEY, pattern TEXT, app TEXT);
         CREATE TABLE IF NOT EXISTS daily_gzip (
             day TEXT, host TEXT, path TEXT, kind TEXT, bytes INTEGER, orig INTEGER,
@@ -221,6 +228,24 @@ def db_init():
             con.execute(f"INSERT INTO {table} SELECT {copy} FROM {table}_old")
             con.execute(f"DROP TABLE {table}_old")
             con.execute("INSERT OR IGNORE INTO meta VALUES ('detail_since', ?)", (today,))
+    # since 0.1.11: LAN or internet also in the daily tables, for the LAN filter. Older rows get net = ''
+    moved = False
+    for table in NET_TABLES:
+        info = con.execute(f"PRAGMA table_info({table})").fetchall()
+        cols = [r[1] for r in info]
+        if "net" in cols:
+            continue
+        moved = moved or con.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone() is not None
+        pos = cols.index("kind") + 1
+        new = cols[:pos] + ["net"] + cols[pos:]
+        types = {r[1]: r[2] for r in info} | {"net": "TEXT"}
+        pk = [r[1] for r in sorted(info, key=lambda r: r[5]) if r[5]] + ["net"]
+        con.execute(f"CREATE TABLE {table}_new ({', '.join(f'{c} {types[c]}' for c in new)}, PRIMARY KEY ({', '.join(pk)}))")
+        con.execute(f"INSERT INTO {table}_new SELECT {', '.join(chr(39) * 2 if c == 'net' else c for c in new)} FROM {table}")
+        con.execute(f"DROP TABLE {table}")
+        con.execute(f"ALTER TABLE {table}_new RENAME TO {table}")
+    if moved:
+        con.execute("INSERT OR IGNORE INTO meta VALUES ('net_since', ?)", (today,))
     if con.execute("SELECT 1 FROM meta WHERE key = 'kinds_moved'").fetchone() is None:
         # up to 0.1.8 "BoatSpeedy-App" was built in; keep it as an own client type where it was seen
         if con.execute("SELECT 1 FROM hourly WHERE kind = 'BoatSpeedy-App' LIMIT 1").fetchone():
@@ -535,10 +560,11 @@ def rebuild_countries():
     first = con.execute("SELECT MIN(day) FROM daily_clients").fetchone()[0]
     if first and con.execute("SELECT 1 FROM daily_countries WHERE country = '??' AND day >= ? LIMIT 1", (first,)).fetchone():
         agg = {}
-        for day, host, client, kind, b, r in con.execute("SELECT day, host, client, kind, bytes, requests FROM daily_clients"):
-            v = agg.setdefault((day, host, country_of(client), kind), [0, 0]); v[0] += b; v[1] += r
+        for day, host, client, kind, net, b, r in con.execute(
+                "SELECT day, host, client, kind, net, bytes, requests FROM daily_clients"):
+            v = agg.setdefault((day, host, country_of(client), kind, net), [0, 0]); v[0] += b; v[1] += r
         con.execute("DELETE FROM daily_countries WHERE day >= ?", (first,))
-        con.executemany("INSERT INTO daily_countries VALUES (?,?,?,?,?,?)", [k + tuple(v) for k, v in agg.items()])
+        con.executemany("INSERT INTO daily_countries VALUES (?,?,?,?,?,?,?)", [k + tuple(v) for k, v in agg.items()])
         con.commit()
     con.close()
 
@@ -690,7 +716,7 @@ class Batch:
     def __init__(self, con, only=None):
         self.con, self.only = con, only  # only: set of tables to fill (catching up), None: all
         self.hourly, self.paths, self.clients, self.countries, self.errors, self.pclients = {}, {}, {}, {}, {}, {}
-        self.referers, self.upstreams, self.gzip, self.apps = {}, {}, {}, {}
+        self.referers, self.upstreams, self.gzip, self.apps, self.app_clients = {}, {}, {}, {}, {}
         self.lines, self.days = 0, set()
         self.base, self.hosts = None, {}  # log file being read, domain -> its log file
 
@@ -704,15 +730,17 @@ class Batch:
         if not only or "daily_path_clients" in only:
             bump(self.pclients, (day, host, r["area"], r["path"], r["code"], r["client"], r["net"], kind), size)
         if not only or "daily_referers" in only:
-            bump(self.referers, (day, host, r["ref"], kind), size)
+            bump(self.referers, (day, host, r["ref"], kind, r["net"]), size)
         if not only or "daily_upstreams" in only:
-            bump(self.upstreams, (day, host, r["upstream"], kind), size)
-        if not only or "daily_apps" in only:
+            bump(self.upstreams, (day, host, r["upstream"], kind, r["net"]), size)
+        if not only or "daily_apps" in only or "daily_app_clients" in only:
             app = app_of(r["ua"], kind)
-            if app:
-                bump(self.apps, (day, host, app[0], app[1], kind), size)
+            if app and (not only or "daily_apps" in only):
+                bump(self.apps, (day, host, app[0], app[1], kind, r["net"]), size)
+            if app and (not only or "daily_app_clients" in only):
+                bump(self.app_clients, (day, host, app[0], app[1], r["client"], r["net"], kind), size)
         if r["ratio"] and (not only or "daily_gzip" in only):
-            v = self.gzip.setdefault((day, host, r["path"], kind), [0, 0])
+            v = self.gzip.setdefault((day, host, r["path"], kind, r["net"]), [0, 0])
             v[0] += size
             v[1] += round(size * r["ratio"])
         if len(self.pclients) + len(self.clients) > 200000:
@@ -722,11 +750,11 @@ class Batch:
             return
         self.hosts[host] = self.base
         bump(self.hourly, (r["ts"], day, r["hod"], host, r["area"], kind, r["status"], r["net"]), size)
-        bump(self.paths, (day, host, r["path"], kind), size)
+        bump(self.paths, (day, host, r["path"], kind, r["net"]), size)
         bump(self.clients, (day, host, r["client"], r["net"], kind), size)
-        bump(self.countries, (day, host, r["cc"], kind), size)
+        bump(self.countries, (day, host, r["cc"], kind, r["net"]), size)
         if r["code"][0] in "45":
-            k = (day, host, r["path"], r["code"], kind)
+            k = (day, host, r["path"], r["code"], kind, r["net"])
             self.errors[k] = self.errors.get(k, 0) + 1
 
     def write_rows(self):
@@ -735,7 +763,7 @@ class Batch:
                 ("hourly", self.hourly, None), ("daily_paths", self.paths, None), ("daily_clients", self.clients, None),
                 ("daily_countries", self.countries, None), ("daily_path_clients", self.pclients, None),
                 ("daily_referers", self.referers, None), ("daily_upstreams", self.upstreams, None),
-                ("daily_apps", self.apps, None),
+                ("daily_apps", self.apps, None), ("daily_app_clients", self.app_clients, None),
                 ("daily_gzip", self.gzip, "bytes, orig")):
             if rows:
                 upsert(con, table, [k + tuple(v) for k, v in rows.items()], cols or "bytes, requests")
@@ -820,7 +848,7 @@ def ingest():
     # tables added later: (meta key, tables), the key holds the first day they are complete from ("" = always)
     for key, tables in (("pc_since", ["daily_path_clients"]),
                         ("v018_since", ["daily_referers", "daily_upstreams", "daily_gzip"]),
-                        ("apps_since", ["daily_apps"])):
+                        ("apps_since", ["daily_apps"]), ("appclients_since", ["daily_app_clients"])):
         if con.execute("SELECT 1 FROM meta WHERE key = ?", (key,)).fetchone() is None:
             since = "" if first_run else backfill(con, bases, known, tables)
             con.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)", (key, since))
@@ -857,7 +885,8 @@ def ingest():
     if first_run:
         con.execute("INSERT OR REPLACE INTO meta VALUES ('backfilled', ?)", (str(int(time.time())),))
     cutoff = (datetime.now(TZ) - timedelta(days=DETAIL_DAYS)).strftime("%Y-%m-%d")
-    for table in ("daily_paths", "daily_clients", "daily_errors", "daily_path_clients", "daily_referers", "daily_gzip"):
+    for table in ("daily_paths", "daily_clients", "daily_errors", "daily_path_clients", "daily_referers", "daily_gzip",
+                  "daily_app_clients"):
         con.execute(f"DELETE FROM {table} WHERE day < ?", (cutoff,))
     con.commit()
     load_sites(con)
@@ -947,6 +976,7 @@ class Period:
     def __init__(self, q):
         self.host = q.get("host", [""])[0]
         self.bots = q.get("bots", ["1"])[0] != "0"
+        self.lan = q.get("lan", ["1"])[0] != "0"  # requests from the own network (LAN)
         self.group = q.get("group", ["1"])[0] != "0"  # domains of one proxy host as one
         self.hcol = "site(host)" if self.group else "host"
         real_now = datetime.now(TZ)
@@ -992,6 +1022,8 @@ class Period:
         extra, extra_args = "", []
         if self.host:
             extra, extra_args = f" AND {self.hcol} = ?", [self.host]
+        if not self.lan:
+            extra += " AND net != 'LAN'"
         # without the bot filter, for the share of bots
         self.where_all, self.args_all = self.where + extra, self.args + extra_args
         if not self.bots:
@@ -1223,22 +1255,26 @@ def client_detail(q):
 
 
 def path_clients(q):
-    """Visitor IPs behind one row of the failed requests (path + code), files (path) or areas (area)."""
+    """Visitor IPs behind one row of the failed requests (path + code), files (path), areas (area)
+    or an app version (app + name = version)."""
     p = Period(q)
     by = q.get("by", [""])[0]
-    host, name, code = (q.get(k, [""])[0][:200] for k in ("of", "name", "code"))
-    col = {"error": "path", "path": "path", "area": "area"}.get(by)
+    host, name, code, app = (q.get(k, [""])[0][:200] for k in ("of", "name", "code", "app"))
+    col = {"error": "path", "path": "path", "area": "area", "version": "version"}.get(by)
     if not col:
-        return {"error": "by must be error, path or area"}
+        return {"error": "by must be error, path, area or version"}
+    table, since_key = ("daily_app_clients", "appclients_since") if by == "version" else ("daily_path_clients", "pc_since")
     where, args = f"{p.dwhere} AND {col} = ?", p.dargs + [name]
+    if by == "version":
+        where += " AND app = ? COLLATE NOCASE"; args.append(app)
     if host:
         where += f" AND {p.hcol} = ?"; args.append(host)
     if by == "error":
         where += " AND code = ?"; args.append(code)
     con = db_connect()
     rows = con.execute(f"SELECT client, net, SUM(bytes), SUM(requests), COUNT(DISTINCT {p.hcol}), GROUP_CONCAT(DISTINCT kind) "
-                       f"FROM daily_path_clients WHERE {where} GROUP BY 1, 2 ORDER BY 4 DESC, 3 DESC", args).fetchall()
-    since = con.execute("SELECT value FROM meta WHERE key = 'pc_since'").fetchone()
+                       f"FROM {table} WHERE {where} GROUP BY 1, 2 ORDER BY 4 DESC, 3 DESC", args).fetchall()
+    since = con.execute("SELECT value FROM meta WHERE key = ?", (since_key,)).fetchone()
     con.close()
     return {"clients": [client_row(r) for r in rows[:PC_LIMIT]], "visitors": len(rows),
             "since": since[0] if since and since[0] > p.detail_day else None}
@@ -1273,6 +1309,24 @@ def apps_info(q):
     return {"apps": out, "types": types, "since": since[0] if since and since[0] > p.detail_day else None}
 
 
+# tables with a client type, and their columns that are added up when rows meet
+KIND_TABLES = {"hourly": "bytes, requests", "daily_paths": "bytes, requests", "daily_clients": "bytes, requests",
+               "daily_countries": "bytes, requests", "daily_errors": "requests", "daily_path_clients": "bytes, requests",
+               "daily_referers": "bytes, requests", "daily_upstreams": "bytes, requests", "daily_gzip": "bytes, orig",
+               "daily_apps": "bytes, requests", "daily_app_clients": "bytes, requests"}
+
+
+def rename_kind(con, old, new):
+    """Stored figures of client type old count as new from now on, rows that meet are added up."""
+    for table, sums in KIND_TABLES.items():
+        cols = [r[1] for r in con.execute(f"PRAGMA table_info({table})")]
+        pick = ", ".join("?" if c == "kind" else c for c in cols)
+        sets = ", ".join(f"{c} = {c} + excluded.{c}" for c in sums.split(", "))
+        con.execute(f"INSERT INTO {table} ({', '.join(cols)}) SELECT {pick} FROM {table} WHERE kind = ? "
+                    f"ON CONFLICT DO UPDATE SET {sets}", (new, old))
+        con.execute(f"DELETE FROM {table} WHERE kind = ?", (old,))
+
+
 def change_client_type(body):
     """add: own client type for an app (name, app), delete: remove one (name). Applies to new log lines."""
     action, name = body.get("action"), str(body.get("name", "")).strip()[:40]
@@ -1288,6 +1342,13 @@ def change_client_type(body):
     with db_lock:
         con = db_connect()
         if action == "add":
+            # earlier own names of this app (also from before an earlier "remove") become the new name
+            builtin = {n for n, _ in BASE_RULES} | {"Sonstige"}
+            old = {r[0] for r in con.execute("SELECT DISTINCT kind FROM daily_apps WHERE app = ? COLLATE NOCASE", (app,))}
+            old |= {r[0] for r in con.execute("SELECT name FROM client_types WHERE app = ? COLLATE NOCASE", (app,))}
+            others = {r[0] for r in con.execute("SELECT name FROM client_types WHERE app != ? COLLATE NOCASE", (app,))}
+            for kind in old - builtin - others - {name}:
+                rename_kind(con, kind, name)
             con.execute("DELETE FROM client_types WHERE app = ? COLLATE NOCASE", (app,))
             pos = con.execute("SELECT COALESCE(MAX(pos), 0) + 1 FROM client_types").fetchone()[0]
             con.execute("INSERT OR REPLACE INTO client_types VALUES (?, ?, ?, ?)", (pos, name, app_pattern(app), app))
@@ -1308,7 +1369,7 @@ def clear_host(host, group=True):
         b, r = con.execute(f"SELECT COALESCE(SUM(bytes),0), COALESCE(SUM(requests),0) FROM hourly WHERE {col} = ?",
                            (host,)).fetchone()
         for table in ("hourly", "daily_paths", "daily_clients", "daily_countries", "daily_errors", "daily_path_clients",
-                      "daily_referers", "daily_upstreams", "daily_gzip", "daily_apps"):
+                      "daily_referers", "daily_upstreams", "daily_gzip", "daily_apps", "daily_app_clients"):
             con.execute(f"DELETE FROM {table} WHERE {col} = ?", (host,))
         con.commit()
         con.close()
@@ -1320,6 +1381,7 @@ def meta():
     hosts = [r[0] for r in con.execute("SELECT host FROM hourly GROUP BY host ORDER BY SUM(bytes) DESC")]
     first = con.execute("SELECT MIN(day) FROM hourly").fetchone()[0]
     since = con.execute("SELECT value FROM meta WHERE key = 'detail_since'").fetchone()
+    net_since = con.execute("SELECT value FROM meta WHERE key = 'net_since'").fetchone()
     con.close()
     size = sum(os.path.getsize(DB_PATH + x) for x in ("", "-wal") if os.path.exists(DB_PATH + x))
     with state_lock:
@@ -1331,7 +1393,7 @@ def meta():
             if main not in (x["name"] for x in sites):
                 sites.append({"name": main, "members": MEMBERS.get(main, [main])})
     out = {"version": VERSION, "repo": REPO, "hosts": hosts, "sites": sites, "first_day": first, "detail_days": DETAIL_DAYS,
-           "detail_since": since[0] if since else None, "clear": CLEAR, "interval": INTERVAL, "db_size": size,
+           "detail_since": since[0] if since else None, "net_since": net_since[0] if net_since else None, "clear": CLEAR, "interval": INTERVAL, "db_size": size,
            "update": update_info(), **s}
     for name, prefix in (("country", "geo"), ("asn", "asn")):
         g = GEO[name]
