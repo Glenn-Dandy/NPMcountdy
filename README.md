@@ -2,7 +2,7 @@
 
 **English** · [Deutsch](README.de.md)
 
-Version 0.1.4
+Version 0.1.5
 
 Traffic dashboard for Nginx Proxy Manager (NPM). Reads its access logs and shows data and
 requests per domain, path, visitor IP, country, provider and client type.
@@ -41,22 +41,16 @@ git pull
 sudo docker compose up -d --build
 ```
 
-`.env` is kept. If `git pull` stops because `docker-compose.yml` was changed: move the values
+`.env` is kept. If `git pull` stops because `docker-compose.yml` was changed: put the log folder
 into `.env`, `git checkout docker-compose.yml`, then again.
 
 ## Settings
 
-All in `.env`, see `.env.example`. After a change: `sudo docker compose up -d`
+On the settings page: time zone, read interval, retention, countries, providers, update check.
+Stored in `data/config.yaml`, applies right away and is kept on updates.
 
-| Variable | Default | |
-|---|---|---|
-| `NPM_LOGS` | /opt/data/logs | NPM log folder |
-| `TZ` | Europe/Berlin | Time zone |
-| `INTERVAL` | 60 | Seconds between two log reads |
-| `DETAIL_DAYS` | 90 | Days that paths and visitor IPs are kept |
-| `CLEAR` | on | Delete a domain's data in the UI |
-| `GEOIP` / `ASN` | on | Countries / providers for IPs |
-| `UPDATE_CHECK` | on | Ask GitHub for new versions |
+Only the log folder is in `.env` (`NPM_LOGS`), because Docker mounts it at start.
+After a change: `sudo docker compose up -d`
 
 ## Behind Cloudflare
 

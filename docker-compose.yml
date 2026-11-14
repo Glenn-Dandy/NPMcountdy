@@ -1,5 +1,6 @@
 services:
-  # Reads the NPM access logs (read-only) and writes the figures to ./data.
+  # Reads the NPM access logs (read-only) and writes the figures and settings to ./data.
+  # Settings are made on the settings page (data/config.yaml). Only the log folder is set here, via .env.
   # No login of its own: only run it in the LAN, e.g. behind an NPM proxy host with an access list.
   npmcountdy:
     build: .
@@ -8,17 +9,10 @@ services:
     restart: unless-stopped
     ports:
       - "7881:7881"
-    # Own values go into a file .env next to this file (see README), git pull leaves it alone.
     environment:
-      TZ: "${TZ:-Europe/Berlin}"
-      INTERVAL: "${INTERVAL:-60}"         # seconds between two log reads
-      DETAIL_DAYS: "${DETAIL_DAYS:-90}"   # days that files and visitor IPs are kept
-      CLEAR: "${CLEAR:-on}"               # allow deleting a domain's data in the UI ("off" disables it)
-      GEOIP: "${GEOIP:-on}"               # countries for IPs, downloads the free DB-IP database monthly ("off" disables it)
-      GEOIP_URL: "${GEOIP_URL:-}"         # own address for the country MMDB, empty: DB-IP
-      ASN: "${ASN:-on}"                   # providers for IPs, also from DB-IP, monthly ("off" disables it)
-      ASN_URL: "${ASN_URL:-}"             # own address for the provider MMDB, empty: DB-IP
-      UPDATE_CHECK: "${UPDATE_CHECK:-on}" # ask GitHub every 12 hours for a newer version ("off" disables it)
+      TZ: Europe/Berlin                       # default, can be changed on the settings page
+      CLEAR: "${CLEAR:-on}"                   # allow deleting a domain's data in the UI
+      LOG_SOURCE: "${NPM_LOGS:-/opt/data/logs}"  # only shown on the settings page
     volumes:
       - ${NPM_LOGS:-/opt/data/logs}:/logs:ro
       - ./data:/data

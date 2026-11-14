@@ -750,6 +750,7 @@ function pageUrl(page, country = "") {
 
 function showPage() {
   document.querySelectorAll(".page").forEach((p) => (p.hidden = p.dataset.page !== state.page));
+  if (state.page === "settings") { $("set-msg").textContent = ""; loadServer().catch(() => {}); }
   document.querySelectorAll(".nav a").forEach((a) => a.classList.toggle("on", a.dataset.page === state.page));
   document.title = state.page === "overview" ? "NPMcountdy" : `${t("page_" + state.page)} · NPMcountdy`;
   hideTip();
@@ -866,6 +867,56 @@ function renderSites(m) {
     : `<li class="empty">${esc(t("group_none"))}</li>`;
 }
 
+// settings page: server settings in data/config.yaml
+const SERVER_KEYS = ["timezone", "interval", "detail_days", "countries", "providers", "update_check"];
+
+function renderServer(s) {
+  const l = s.log;
+  $("set-logs").textContent = !l.files ? t("set_logs_none", { path: l.source })
+    : l.readable < l.files ? t("set_logs_unreadable", { path: l.source, n: l.files, u: l.files - l.readable })
+    : t("set_logs_found", { path: l.source, n: l.files });
+  $("set-logs").classList.toggle("err", !l.files || l.readable < l.files);
+  for (const k of SERVER_KEYS) {
+    const el = $("set-" + k);
+    if (el.type === "checkbox") el.checked = s.values[k]; else el.value = s.values[k];
+    el.classList.remove("bad");
+  }
+}
+
+async function loadServer() {
+  if (!$("tz-list").options.length && Intl.supportedValuesOf) {
+    $("tz-list").innerHTML = Intl.supportedValuesOf("timeZone").map((z) => `<option value="${esc(z)}">`).join("");
+  }
+  renderServer(await getJSON("api/settings"));
+}
+
+async function saveServer(e) {
+  e.preventDefault();
+  const msg = $("set-msg"), body = {};
+  for (const k of SERVER_KEYS) {
+    const el = $("set-" + k);
+    body[k] = el.type === "checkbox" ? el.checked : el.value.trim();
+  }
+  msg.classList.remove("err");
+  try {
+    const r = await fetch("api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-NPMcountdy": "settings" },
+      body: JSON.stringify(body),
+    });
+    const res = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(res.error || "HTTP " + r.status);
+    renderServer(res);
+    msg.textContent = t("saved");
+    loadMeta().catch(() => {});
+  } catch (err) {
+    const key = SERVER_KEYS.find((k) => err.message.startsWith(k + ":"));
+    if (key) $("set-" + key).classList.add("bad");
+    msg.textContent = t("save_failed", { error: err.message });
+    msg.classList.add("err");
+  }
+}
+
 async function loadMeta() {
   const m = await getJSON("api/meta");
   state.meta = m;
@@ -930,6 +981,7 @@ $("clear-open").addEventListener("click", () => {
 });
 $("clear-no").addEventListener("click", () => { $("clear-box").hidden = true; updateClear(); });
 $("clear-yes").addEventListener("click", clearHost);
+$("server-form").addEventListener("submit", saveServer);
 $("country-clear").addEventListener("click", () => setCountry(state.country));
 // links to pages, also those drawn later (footer)
 document.addEventListener("click", (e) => {

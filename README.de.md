@@ -2,7 +2,7 @@
 
 [English](README.md) · **Deutsch**
 
-Version 0.1.4
+Version 0.1.5
 
 Traffic-Dashboard für den Nginx Proxy Manager (NPM). Liest dessen Access-Logs und zeigt Daten
 und Anfragen pro Domain, Pfad, Besucher-IP, Land, Anbieter und Client-Art.
@@ -42,21 +42,15 @@ sudo docker compose up -d --build
 ```
 
 Die `.env` bleibt dabei erhalten. Bricht `git pull` wegen einer geänderten `docker-compose.yml` ab:
-Werte in die `.env` übernehmen, `git checkout docker-compose.yml`, dann nochmal.
+Log-Ordner in die `.env` eintragen, `git checkout docker-compose.yml`, dann nochmal.
 
 ## Einstellungen
 
-Alle in der `.env`, siehe `.env.example`. Nach einer Änderung: `sudo docker compose up -d`
+Unter Einstellungen in der Oberfläche: Zeitzone, Einlese-Intervall, Aufbewahrung, Länder, Anbieter,
+Update-Prüfung. Gespeichert in `data/config.yaml`, gilt sofort und bleibt bei Updates erhalten.
 
-| Variable | Standard | |
-|---|---|---|
-| `NPM_LOGS` | /opt/data/logs | Log-Ordner des NPM |
-| `TZ` | Europe/Berlin | Zeitzone |
-| `INTERVAL` | 60 | Sekunden zwischen zwei Einlesevorgängen |
-| `DETAIL_DAYS` | 90 | Tage, die Pfade und Besucher-IPs gespeichert bleiben |
-| `CLEAR` | on | Daten einer Domain in der Oberfläche löschen |
-| `GEOIP` / `ASN` | on | Länder / Anbieter zu IPs |
-| `UPDATE_CHECK` | on | bei GitHub nach neuen Versionen fragen |
+Nur der Log-Ordner steht in der `.env` (`NPM_LOGS`), weil Docker ihn beim Start einbindet.
+Nach einer Änderung: `sudo docker compose up -d`
 
 ## Hinter Cloudflare
 

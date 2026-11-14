@@ -191,6 +191,15 @@ footer a { color: inherit; }
 .switch input:focus-visible + .knob { outline: 2px solid var(--accent); outline-offset: 2px; }
 .side-note { margin: 6px 0 0; padding: 0 10px; color: var(--muted); font-size: 12px; }
 .switch.setting { padding: 2px 0; }
+.server-form { display: flex; flex-direction: column; gap: 10px; max-width: 560px; }
+.field { display: flex; justify-content: space-between; align-items: center; gap: 12px; font-size: 13px; }
+.field input { font: inherit; width: 200px; max-width: 55%; padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; background: transparent; color: var(--text); }
+.field input:invalid, .field input.bad { border-color: var(--c5); }
+.field output { color: var(--muted); text-align: right; overflow-wrap: anywhere; }
+.server-form > .note { margin: -6px 0 0; }
+.form-foot { display: flex; align-items: center; gap: 12px; margin-top: 4px; }
+.form-foot .note { margin: 0; }
+.form-foot .note.err, .field output.err { color: var(--c5); }
 .site-list { margin: 8px 0 0; padding-left: 18px; font-size: 13px; display: flex; flex-direction: column; gap: 4px; }
 .site-list .empty { list-style: none; margin-left: -18px; padding: 0; }
 

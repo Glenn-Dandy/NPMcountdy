@@ -164,6 +164,22 @@
         <ul class="site-list" id="site-list"></ul>
       </section>
     </div>
+    <section class="card wide">
+      <h3 data-i18n="server_settings">Server</h3>
+      <form id="server-form" class="server-form" novalidate>
+        <div class="field"><span data-i18n="set_logs">Log folder</span><output id="set-logs"></output></div>
+        <p class="note" data-i18n="set_logs_note"></p>
+        <label class="field"><span data-i18n="set_timezone">Time zone</span><input id="set-timezone" list="tz-list" autocomplete="off" spellcheck="false"></label>
+        <datalist id="tz-list"></datalist>
+        <label class="field"><span data-i18n="set_interval">Read the logs every (seconds)</span><input id="set-interval" type="number" min="10" max="3600" step="1"></label>
+        <label class="field"><span data-i18n="set_detail_days">Keep paths and visitor IPs (days)</span><input id="set-detail_days" type="number" min="1" max="3650" step="1"></label>
+        <label class="switch setting"><input type="checkbox" id="set-countries"><span class="knob" aria-hidden="true"></span><span data-i18n="set_countries">Countries for visitor IPs</span></label>
+        <label class="switch setting"><input type="checkbox" id="set-providers"><span class="knob" aria-hidden="true"></span><span data-i18n="set_providers">Providers for visitor IPs</span></label>
+        <label class="switch setting"><input type="checkbox" id="set-update_check"><span class="knob" aria-hidden="true"></span><span data-i18n="set_update_check">Check for new versions</span></label>
+        <div class="form-foot"><button class="btn" type="submit" data-i18n="save">Save</button><span id="set-msg" class="note" role="status"></span></div>
+        <p class="note" data-i18n="server_note"></p>
+      </form>
+    </section>
   </section>
 
   <section class="page" data-page="about" hidden>

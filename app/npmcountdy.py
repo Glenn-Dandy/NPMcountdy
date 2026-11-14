@@ -21,7 +21,7 @@ from ipaddress import ip_address, ip_network
 from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo
 
-VERSION = "0.1.4"
+VERSION = "0.1.5"
 REPO = "https://github.com/Glenn-Dandy/NPMcountdy"
 LOG_DIR = os.environ.get("LOG_DIR", "/logs")
 DB_PATH = os.environ.get("DB_PATH", "/data/npmcountdy.db")
@@ -69,6 +69,7 @@ KIND_RULES = [
 ]
 
 state_lock = threading.Lock()
+wake = threading.Event()  # set to read the logs before the interval is over
 db_lock = threading.Lock()  # never ingest and delete at the same time, or deleted rows come back
 status = {"last_ingest": None, "last_lines": 0, "last_error": None}
 
@@ -287,6 +288,120 @@ for _g in GEO.values():
     _g.update(db=None, mtime=None, tried=0, error=None)
 country_cache = {}
 asn_cache = {}
+
+
+# ---------- Settings: data/config.yaml, written by the settings page ----------
+# Environment variables (docker-compose.yml) are only the defaults. The log folder is not in here:
+# the container only sees the folder Docker mounts as /logs (NPM_LOGS in .env).
+
+CONFIG_PATH = os.environ.get("CONFIG_PATH", os.path.join(DATA_DIR, "config.yaml"))
+LOG_SOURCE = os.environ.get("LOG_SOURCE", LOG_DIR)  # the log folder as the server names it, only shown in the UI
+DEFAULTS = {"timezone": os.environ.get("TZ", "Europe/Berlin"), "interval": INTERVAL, "detail_days": DETAIL_DAYS,
+            "countries": GEOIP, "providers": ASN, "update_check": UPDATE_CHECK,
+            "geoip_url": GEO["country"]["url"], "asn_url": GEO["asn"]["url"]}
+settings = dict(DEFAULTS)
+
+
+def check_setting(key, value):
+    """The value in its proper type, ValueError if it is not allowed."""
+    default = DEFAULTS[key]
+    if isinstance(default, bool):
+        if isinstance(value, bool):
+            return value
+        if str(value).lower() in ("on", "true", "yes", "1"):
+            return True
+        if str(value).lower() in ("off", "false", "no", "0"):
+            return False
+        raise ValueError(f"{key}: on or off")
+    if isinstance(default, int):
+        lo, hi = {"interval": (10, 3600), "detail_days": (1, 3650)}[key]
+        v = int(value)
+        if not lo <= v <= hi:
+            raise ValueError(f"{key}: {lo} to {hi}")
+        return v
+    v = str(value).strip()
+    if key == "timezone":
+        try:
+            ZoneInfo(v)
+        except Exception:
+            raise ValueError(f"timezone: unknown time zone {v!r}")
+    return v
+
+
+def read_config():
+    """Simple YAML: one 'key: value' per line, # starts a comment. Unknown or broken lines are skipped."""
+    out = {}
+    try:
+        with open(CONFIG_PATH, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return out
+    for line in lines:
+        line = line.split(" #", 1)[0].strip()
+        if not line or line.startswith("#") or ":" not in line:
+            continue
+        key, value = (x.strip() for x in line.split(":", 1))
+        if key in DEFAULTS:
+            try:
+                out[key] = check_setting(key, value.strip("'\""))
+            except ValueError as e:
+                print(f"config.yaml: {e}")
+    return out
+
+
+def write_config(values):
+    def fmt(v):
+        return ("on" if v else "off") if isinstance(v, bool) else f'"{v}"' if v == "" else str(v)
+    text = "# NPMcountdy settings, written by the settings page. They override docker-compose.yml.\n"
+    text += "".join(f"{k}: {fmt(values[k])}\n" for k in DEFAULTS if k in values)
+    with open(CONFIG_PATH + ".tmp", "w", encoding="utf-8") as f:
+        f.write(text)
+    os.replace(CONFIG_PATH + ".tmp", CONFIG_PATH)
+
+
+def apply_settings(values):
+    global TZ, INTERVAL, DETAIL_DAYS, UPDATE_CHECK
+    turned_on = values["update_check"] and not UPDATE_CHECK
+    with state_lock:
+        settings.update(values)
+        TZ, INTERVAL, DETAIL_DAYS = ZoneInfo(values["timezone"]), values["interval"], values["detail_days"]
+        UPDATE_CHECK = values["update_check"]
+        for name, key, url in (("country", "countries", "geoip_url"), ("asn", "providers", "asn_url")):
+            g = GEO[name]
+            if g["url"] != values[url]:
+                g.update(url=values[url], tried=0)
+            g["on"] = values[key]
+            if not g["on"]:  # forget the database, it is loaded again when switched back on
+                g.update(db=None, mtime=None, error=None)
+                (country_cache if name == "country" else asn_cache).clear()
+    if turned_on:
+        threading.Thread(target=check_update, daemon=True).start()
+    wake.set()  # read the logs (and load switched on databases) right away
+
+
+def load_settings():
+    apply_settings({**DEFAULTS, **read_config()})
+
+
+def log_info():
+    files = glob(os.path.join(LOG_DIR, "proxy-host-*_access.log"))
+    return {"source": LOG_SOURCE, "files": len(files), "readable": sum(os.access(f, os.R_OK) for f in files)}
+
+
+def settings_info():
+    with state_lock:
+        values = dict(settings)
+    return {"values": values, "defaults": DEFAULTS, "log": log_info()}
+
+
+def save_settings(body):
+    values = dict(settings)
+    for key, value in body.items():
+        if key in DEFAULTS:
+            values[key] = check_setting(key, value)
+    write_config(values)
+    apply_settings(values)
+    return settings_info()
 
 
 def geo_download(name):
@@ -652,7 +767,8 @@ def ingest_loop():
         except Exception as e:  # keep running, show the error in the UI
             with state_lock:
                 status.update(last_error=f"{type(e).__name__}: {e}")
-        time.sleep(INTERVAL)
+        wake.wait(INTERVAL)
+        wake.clear()
 
 
 # ---------- Update check ----------
@@ -687,7 +803,8 @@ def check_update():
 
 def update_loop():
     while True:
-        check_update()
+        if UPDATE_CHECK:  # can be switched on and off in the settings
+            check_update()
         time.sleep(3600 if update["error"] else 12 * 3600)  # after an error try again in an hour
 
 
@@ -996,7 +1113,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         u = urlparse(self.path)
         api = {"/api/summary": lambda: summary(parse_qs(u.query)), "/api/client": lambda: client_detail(parse_qs(u.query)),
-               "/api/requesters": lambda: path_clients(parse_qs(u.query)),
+               "/api/requesters": lambda: path_clients(parse_qs(u.query)), "/api/settings": settings_info,
                "/api/meta": meta, "/api/update": lambda: update_now(parse_qs(u.query))}
         for path, fn in api.items():
             if u.path.endswith(path):
@@ -1016,6 +1133,18 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         err = lambda code, msg: self.send(code, json.dumps({"error": msg}).encode(), "application/json")
+        if urlparse(self.path).path.endswith("/api/settings"):
+            if self.headers.get("X-NPMcountdy") != "settings":
+                return err(403, "Only from the UI")
+            try:
+                body = json.loads(self.rfile.read(min(int(self.headers.get("Content-Length") or 0), 4096)) or b"{}")
+                if not isinstance(body, dict):
+                    raise ValueError("Invalid request")
+                return self.send(200, json.dumps(save_settings(body)).encode(), "application/json")
+            except (ValueError, TypeError) as e:
+                return err(400, str(e))
+            except OSError as e:
+                return err(500, f"config.yaml: {e}")
         if not urlparse(self.path).path.endswith("/api/clear"):
             return err(404, "Not found")
         if not CLEAR:
@@ -1039,10 +1168,11 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     print(f"NPMcountdy {VERSION}, Port {PORT}")
+    os.makedirs(DATA_DIR, exist_ok=True)
+    load_settings()
     db_init()
     threading.Thread(target=ingest_loop, daemon=True).start()
-    if UPDATE_CHECK:
-        threading.Thread(target=update_loop, daemon=True).start()
+    threading.Thread(target=update_loop, daemon=True).start()
     ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
 
 
